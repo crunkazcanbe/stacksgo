@@ -2,8 +2,6 @@
 
 **A fast, single-binary manager for a fleet of Docker Compose stacks — written in Go, talking straight to the Docker Engine API.**
 
-`stacks` runs a homelab made of many independent Compose files (one `.yml` per "stack") and gives you one command to bring them up, heal them, route them through Traefik, sleep them on demand, roll back images, reclaim disk, and more — with a full terminal UI on top.
-
 This is the **v3.0 Go rewrite**: the original was ~20k lines of Bash + Python shelling out to the `docker` CLI. It's now a single compiled Go binary that uses the **Docker Engine API** directly (with a CLI fallback), so it's dramatically faster and has no Python runtime to babysit.
 
 > Companion project: **[`stackd`](https://github.com/crunkazcanbe/stackd)** — a tiny boot orchestrator + watchdog that *drives* `stacks` to bring up exactly the services you want at boot and keep them alive.
