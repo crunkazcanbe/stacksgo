@@ -12,22 +12,29 @@ import (
 	"strings"
 )
 
-// stacksVersion = "v<commitcount>·<shortsha>" from the git clone, else "dev".
-// repoDir() is resolved universally (env / conf / binary's own dir) — no hardcoded path.
+// stacksRelease is the major version. Jumped to 3.0 for the milestone rewrite:
+// v2.x = the Docker Engine API migration; v3.0 = the full Go rewrite (compiled,
+// API-native). Bump this by hand for future milestones.
+const stacksRelease = "3.0"
+const stacksCodename = "Go" // the v3.0 leap: bash+python → one Go binary on the Docker API
+
+// stacksVersion = "v3.0 (Go) · <commitcount>·<shortsha>". The release is explicit;
+// the commit-count·sha (from the git clone, universal repoDir()) is the build tag.
 func stacksVersion() string {
+	rel := "v" + stacksRelease + " (" + stacksCodename + ")"
 	repo := repoDir()
 	if repo == "" {
-		return "dev"
+		return rel + " · dev"
 	}
 	sha := gitOut(repo, "rev-parse", "--short", "HEAD")
 	if sha == "" {
-		return "dev"
+		return rel + " · dev"
 	}
 	cnt := gitOut(repo, "rev-list", "--count", "HEAD")
 	if cnt == "" {
 		cnt = "0"
 	}
-	return "v" + cnt + "·" + sha
+	return rel + " · " + cnt + "·" + sha
 }
 
 func gitOut(repo string, args ...string) string {
