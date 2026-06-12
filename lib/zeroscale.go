@@ -221,10 +221,11 @@ func zeroScaleAvailable() bool {
 	}
 	cfg := configLoad()
 	forced := cfg["ZERO_SCALE_FORCE"] == "1"
-	if sablierInstalled() && !forced {
-		return false
-	}
-	if cfg["AUTO_DETECT_TRAEFIK"] != "0" && !detectTraefik().present {
+	// Needs Traefik to route wakes (skip the check when forced). Sablier being
+	// installed no longer HIDES the per-container config — you can set Zero Scale
+	// up while still on Sablier (transition); the engine + status just warn about
+	// the conflict. This is what lets the Containers-tab ⚡ Zero Scale toggle show.
+	if !forced && cfg["AUTO_DETECT_TRAEFIK"] != "0" && !detectTraefik().present {
 		return false
 	}
 	return true
@@ -277,7 +278,7 @@ func zeroScaleStatus() {
 		if configLoad()["ZERO_SCALE_FORCE"] == "1" {
 			fmt.Printf("  \x1b[1;31m⚠ Sablier is installed AND zero_scale_force=1\x1b[0m — both wake-on-visit engines are active; they MAY conflict.\n")
 		} else {
-			fmt.Printf("  \x1b[33m• Sablier installed → Zero Scale auto-disabled\x1b[0m (set zero_scale_force=1 to override, retire Sablier to clear)\n")
+			fmt.Printf("  \x1b[33m• Sablier also installed\x1b[0m — configure Zero Scale freely, but don't RUN both engines at once (retire Sablier before starting the Zero Scale engine)\n")
 		}
 	}
 	fmt.Printf("  options shown in menu: %s\n", boolStr(zeroScaleAvailable()))
@@ -375,6 +376,17 @@ func zsLandingHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, "asleep")
 		return
+	}
+	// WAIT FOR THE DATABASES: wake (and ensure running) the shared DB containers
+	// FIRST, so the app doesn't come up before its database is ready. Default
+	// covers the consolidated db_0 databases; override with zero_scale_depends.
+	if cfgBoolKey(cfg, "ZERO_SCALE_WAKE_DEPENDS", true) {
+		deps := strings.Fields(cfgStrKey(cfg, "ZERO_SCALE_DEPENDS", "pgvectordb redisdb"))
+		for _, dep := range deps {
+			if dep != "" && !containerRunning(dep) {
+				_ = exec.Command("docker", "start", dep).Run() // blocking: DB up before the app
+			}
+		}
 	}
 	// fire the wake (start every container for the site)
 	for _, cn := range s.Containers {

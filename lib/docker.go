@@ -1341,6 +1341,7 @@ var listMap = map[string]listJoin{
 	"scale_skip": {"SCALE_SKIP_CONTAINERS", " "},
 	// boot bring-up + watchdog selectable lists
 	"zero_scale_ignore_user_agents": {"ZERO_SCALE_IGNORE_USER_AGENTS", ","}, // UAs that DON'T trigger a wake (bots/monitors)
+	"zero_scale_depends":            {"ZERO_SCALE_DEPENDS", " "},            // containers (shared DBs) to wake + wait for FIRST on any visit
 	"boot_stacks":      {"BOOT_STACKS", " "},      // what starts at boot (stack or stack/service)
 	"boot_escalation":  {"BOOT_ESCALATION", " "},  // ordered harder steps, e.g. recreate fix
 	"watch_stacks":     {"WATCH_STACKS", " "},     // what the watchdog keeps alive (blank = boot_stacks)
