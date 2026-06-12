@@ -1289,6 +1289,8 @@ var scalarMap = map[string]string{
 	"watch_sites":         "WATCH_SITES",         // HTTP-check each watched stack's site(s) and heal if broken
 	"watch_site_ok_codes": "WATCH_SITE_OK_CODES", // HTTP codes that count as "site working" (comma list)
 	"watch_site_timeout":  "WATCH_SITE_TIMEOUT",  // seconds to wait for a site to answer
+	"heal_grace":          "HEAL_GRACE",          // seconds to leave a stack alone after a heal (anti-loop grace)
+	"boot_verify_sites":   "BOOT_VERIFY_SITES",   // at boot, after bring-up, verify sites + heal the broken ones
 	// ── auto-discovery (no reliance on STACKS_DIR) ────────────────────────────
 	"auto_detect_containers": "AUTO_DETECT_CONTAINERS", // show ALL running containers (Docker API), on by default
 	"auto_detect_stacks":     "AUTO_DETECT_STACKS",     // auto-find compose stacks (Docker API labels)

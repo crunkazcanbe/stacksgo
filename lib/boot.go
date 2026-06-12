@@ -263,6 +263,34 @@ func runBoot() {
 		}
 	}
 	fmt.Printf("\x1b[1;32m✔ boot done\x1b[0m  %d up / %d not-yet-healthy\n", up, down)
+
+	// Optional: after bring-up, verify the actual SITES serve (not just that
+	// containers are running) and heal any whose route is broken (502/404).
+	// Gated behind boot_verify_sites so it's off by default. A short settle
+	// wait gives apps time to bind before the first probe, and each healed
+	// stack is left alone (no second probe this pass) to avoid a boot loop.
+	cfg := configLoad()
+	if cfgBoolKey(cfg, "BOOT_VERIFY_SITES", false) {
+		settle := cfgInt(cfg, "HEAL_GRACE", 120)
+		if settle > 30 {
+			settle = 30 // boot settle is capped short; full grace is the watchdog's job
+		}
+		fmt.Printf("\x1b[36m🔎 verifying sites (settle %ds)…\x1b[0m\n", settle)
+		time.Sleep(time.Duration(settle) * time.Second)
+		var broken []string
+		for _, s := range bc.stacks {
+			if stackHealthy(s) && !stackSiteOK(s, cfg) {
+				fmt.Printf("\x1b[31m✘ %s: site not serving after boot — healing\x1b[0m\n", s)
+				broken = append(broken, s)
+			}
+		}
+		if len(broken) > 0 {
+			parallelApply(broken, bc.parallel, bc.watchStrategy,
+				bc.watchEscalate, bc.watchForce, bc.watchEscalation)
+		} else {
+			fmt.Println("\x1b[32m  all boot sites serving ✔\x1b[0m")
+		}
+	}
 }
 
 // bootApplyDockerRestart enforces the Docker-startup-control toggle:
@@ -417,13 +445,25 @@ func cmdWatch(args []string) {
 	}
 	fmt.Printf("\x1b[1;32m🐶 Stacks watchdog\x1b[0m  every %ds, strategy=%s, %d stacks\n",
 		bc.watchInterval, bc.watchStrategy, len(bc.watchStacks))
+	// Anti-loop grace: after healing a stack, leave it alone for HEAL_GRACE
+	// seconds so it has time to come up before we touch it again. Seed every
+	// stack with "now" so the first grace window is a startup warmup.
+	lastHeal := map[string]time.Time{}
+	startNow := time.Now()
+	for _, s := range bc.watchStacks {
+		lastHeal[s] = startNow
+	}
 	for {
 		// reload config each sweep so Settings-tab edits take effect live
 		bc = loadBootConfig()
 		cfg := configLoad()
 		checkSites := cfgBoolKey(cfg, "WATCH_SITES", false)
+		grace := time.Duration(cfgInt(cfg, "HEAL_GRACE", 120)) * time.Second
 		var down []string
 		for _, s := range bc.watchStacks {
+			if t, ok := lastHeal[s]; ok && time.Since(t) < grace {
+				continue // still in its grace window — leave it alone
+			}
 			if !stackHealthy(s) {
 				down = append(down, s)
 				continue
@@ -439,6 +479,12 @@ func cmdWatch(args []string) {
 			fmt.Printf("\x1b[33m… healing %d: %s\x1b[0m\n", len(down), strings.Join(down, " "))
 			parallelApply(down, bc.parallel, bc.watchStrategy,
 				bc.watchEscalate, bc.watchForce, bc.watchEscalation)
+			// stamp each healed stack so its grace window restarts — prevents a
+			// re-heal loop while the stack is still coming back up
+			now := time.Now()
+			for _, s := range down {
+				lastHeal[s] = now
+			}
 		}
 		if once {
 			return
