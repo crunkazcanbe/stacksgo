@@ -423,7 +423,13 @@ func buildHubSearch(term string) string {
 	buildUpdate("Searching registries for: "+term, 15)
 	// Clear UI so regsearch has full screen
 	buildClearUI()
-	cmd := exec.Command("python3", "/usr/local/lib/stacks_search.py", term, "--select")
+	// Use THIS binary's native regsearch (12 registries: Docker Hub, Hub
+	// Official, ghcr.io, Self-Hosted, Quay, GitLab, Verified/AWS, Codeberg,
+	// LinuxServer.io, Bitnami, Microsoft MCR, ArtifactHub). --select writes the
+	// chosen image to /tmp/stacks_build_selected and exits. No Python.
+	os.Remove("/tmp/stacks_build_selected")
+	cmd := exec.Command(selfExe(), "regsearch", term, "--select")
+	cmd.Env = dockerEnv()
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1275,6 +1281,26 @@ func cmdBuild(argv []string) {
 		}
 	}
 
+	// ── 6c. Network / volume (netvol step — mirrors the Python wizard) ──────
+	buildUpdate("Network & volume...", 65)
+	autoNetwork, autoVolume, externalNet := true, true, true
+	nv := buildAsk("Auto-create network & volume for this container? (y/n)", "y")
+	if strings.ToLower(nv) == "y" {
+		nt := buildFzf([]string{
+			"External (stored in creator/core file)",
+			"Internal (stored in this compose file)",
+		}, "Network/Volume type?", "")
+		if nt != "" {
+			externalNet = strings.Contains(nt, "External")
+		}
+		log = append(log, fmt.Sprintf("Net/Vol: auto (%s)",
+			map[bool]string{true: "external", false: "internal"}[externalNet]))
+	} else {
+		autoNetwork, autoVolume = false, false
+		log = append(log, "Net/Vol: skipped (user)")
+	}
+	_ = externalNet
+
 	// ── 7. Build scaffold ──────────────────────────────────────────────────
 	buildUpdate("Building compose scaffold...", 70)
 	var fpath string
@@ -1322,7 +1348,9 @@ func cmdBuild(argv []string) {
 		if buildInject(dbInfo.Stack, dblk, svcNet, dvol) {
 			log = append(log, fmt.Sprintf("✔ DB %s → %s", dbInfo.Name, dbInfo.Stack))
 		}
-		exec.Command("docker", "volume", "create", dvol).Run()
+		if autoVolume {
+			exec.Command("docker", "volume", "create", dvol).Run()
+		}
 	}
 
 	if redisInfo != nil && redisInfo.New {
@@ -1343,17 +1371,19 @@ func cmdBuild(argv []string) {
 	}
 
 	// ── 9. Network ─────────────────────────────────────────────────────────
-	buildUpdate(fmt.Sprintf("Creating network %s...", svcNet), 92)
-	if exec.Command("docker", "network", "inspect", svcNet).Run() != nil {
-		exec.Command("docker", "network", "create", svcNet).Run()
-		log = append(log, "Network: "+svcNet)
+	if autoNetwork {
+		buildUpdate(fmt.Sprintf("Creating network %s...", svcNet), 92)
+		if exec.Command("docker", "network", "inspect", svcNet).Run() != nil {
+			exec.Command("docker", "network", "create", svcNet).Run()
+			log = append(log, "Network: "+svcNet)
+		}
 	}
 
 	buildUpdate("Build complete! ✨", 100)
 	time.Sleep(300 * time.Millisecond)
 
-	// Write log — Python writes to MyDocker/ (the parent of the Stacks dir).
-	lpath := filepath.Join(filepath.Dir(stacksDir()), fmt.Sprintf("stacks_build_%s.log", svcName))
+	// Write log into the central logs folder (logDir = <data>/logs by default).
+	lpath := logPath(fmt.Sprintf("stacks_build_%s.log", svcName))
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("=== Build: %s ===\n", svcName))
 	for _, l := range log {

@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 func main() {
@@ -49,6 +50,8 @@ func main() {
 		selfupdateMain(rest) // selfupdate.go
 	case "images":
 		imageHistoryMain(rest) // imagehistory.go
+	case "logdump", "logsync":
+		cmdLogdump(rest) // logs.go — write one log file per running container
 
 	// ── lifecycle + utility commands (dispatch.go) ────────────────────────────
 	case "up":
@@ -107,6 +110,13 @@ func main() {
 		familiesReport()
 	case "__gensrvs": // internal: mirrors `python3 stacks_gen_srvs.py` (gensrvs.go)
 		genServices()
+	case "__geninject": // internal: mirrors `python3 stacks_gen_gi.py global_inject.conf STACKS_DIR`
+		conf := filepath.Join(configDir(), "global_inject.conf")
+		if err := genGlobalInject(conf, stacksDir()); err != nil {
+			fmt.Println("✘ gen inject:", err)
+		} else {
+			fmt.Println("✔ Generated", conf)
+		}
 	case "__proxyfile": // internal: mirrors stacks_proxy_file.py <path> <svc> <val> [skip]
 		sk := ""
 		if len(rest) > 3 {

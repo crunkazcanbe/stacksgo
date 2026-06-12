@@ -68,6 +68,13 @@ var scalarMap = map[string]string{
 	"rich_dynamics_generator": "GEN_RICH", "generate_db_entrypoints": "GEN_DB_ENTRYPOINTS",
 	// base/location overrides (everything else derives from data_folder if unset)
 	"data_folder": "STACKS_DATA_DIR", "logs_folder": "STACKS_LOG_DIR", "backup_folder": "BACKUP_DEST",
+	// Zero Scale (our Sablier replacement) — master on/off; when off, the Zero Scale
+	// options disappear from the Containers Tab popup.
+	"zero_scale": "ZERO_SCALE",
+	// per-tab visibility toggles (turn any tab off in the config)
+	"tab_containers": "TAB_CONTAINERS", "tab_stacks": "TAB_STACKS", "tab_logs": "TAB_LOGS",
+	"tab_dynamics": "TAB_DYNAMICS", "tab_art": "TAB_ART", "tab_backup": "TAB_BACKUP",
+	"tab_network": "TAB_NETWORK", "tab_updates": "TAB_UPDATES", "tab_settings": "TAB_SETTINGS",
 }
 
 // LIST_MAP: friendly YAML list key -> (internal key, join char).

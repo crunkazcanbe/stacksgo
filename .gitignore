@@ -2,3 +2,9 @@
 /stacks
 *.test
 *.out
+
+# build/test cruft
+--force/
+*.bak-predev
+*.bak-*
+stacks

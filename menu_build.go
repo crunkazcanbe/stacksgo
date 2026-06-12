@@ -13,9 +13,12 @@ import (
 )
 
 var tuiBuildItems = []tuiAction{
-	{"Build a service into a stack…", "build_into"},
+	{"Build new service (wizard)", "build_into"},
+	{"Create new stack + add service", "build_new_stack"},
 	{"Generate dynamics from ALL stacks", "gen_dyn_all"},
+	{"Generate dynamics from one stack", "gen_dyn_one"},
 	{"Force regen ALL dynamics", "gen_dyn_force"},
+	{"Generate global inject config", "gen_inject"},
 	{"Generate sablier groups config", "gen_groups"},
 	{"Run stacks fix on ALL", "fix_all"},
 	{"Run stacks repair on ALL", "repair_all"},
@@ -41,33 +44,60 @@ func (m menuModel) handleBuildKey(k string) (tea.Model, tea.Cmd) {
 func (m menuModel) doBuildAction(action string) (menuModel, tea.Cmd) {
 	switch action {
 	case "build_into":
-		// Chain three input prompts: image -> service -> stack, then run build.
-		m.popup = tuiInputPopup("Build — image", "Docker image (e.g. nginx:latest):", "",
-			func(image string) (menuModel, tea.Cmd) {
-				if image == "" {
+		// Launch the REAL interactive build wizard (same 9-step flow as the
+		// Python menu): stack pick → Docker Hub image search → IP → port →
+		// name → DB detect/setup → redis → companion → scaffold. The Go engine
+		// (cmdBuild) drives all the prompts itself, so we just suspend the TUI
+		// and hand it the terminal. An optional service-name hint seeds the
+		// image search; blank = pick everything in the wizard.
+		m.popup = tuiInputPopup("Build wizard", "Service name to search for (blank = full wizard):", "",
+			func(hint string) (menuModel, tea.Cmd) {
+				if hint != "" && !tuiValidName(hint) {
 					return m, nil
 				}
-				m.popup = tuiInputPopup("Build — service", "Service / container name:", "",
-					func(svc string) (menuModel, tea.Cmd) {
-						if svc == "" || !tuiValidName(svc) {
+				if hint == "" {
+					return m, tuiExecSelf("build")
+				}
+				return m, tuiExecSelf("build", hint)
+			})
+		return m, nil
+	case "build_new_stack":
+		// Wizard that creates a brand-new stack file. Prompt for the new stack
+		// name + a service hint, then run the interactive build engine — it
+		// scaffolds a new <stack>.yml when the target doesn't exist yet.
+		m.popup = tuiInputPopup("New stack", "New stack name (e.g. media_5):", "",
+			func(stack string) (menuModel, tea.Cmd) {
+				if stack == "" || !tuiValidName(stack) {
+					return m, nil
+				}
+				m.popup = tuiInputPopup("New stack — service", "Service name to search for:", "",
+					func(hint string) (menuModel, tea.Cmd) {
+						if hint == "" || !tuiValidName(hint) {
 							return m, nil
 						}
-						m.popup = tuiInputPopup("Build — stack", "Target stack name:", "",
-							func(stack string) (menuModel, tea.Cmd) {
-								if stack == "" || !tuiValidName(stack) {
-									return m, nil
-								}
-								return m, tuiSelfCmd("Build "+svc+" → "+stack, "build", image, svc, stack)
-							})
-						return m, nil
+						// `stacks build <hint> <stack>` → svc=hint, target=stack,
+						// image empty → Hub search → full wizard into a new file.
+						return m, tuiExecSelf("build", hint, stack)
 					})
 				return m, nil
 			})
 		return m, nil
 	case "gen_dyn_all":
 		return m, tuiSelfCmd("Gen ALL dynamics", "dynamics", "generate", "all")
+	case "gen_dyn_one":
+		// Pick a single stack, regenerate just its dynamic config.
+		m.popup = tuiInputPopup("Gen dynamics (one stack)", "Stack name:", "",
+			func(stack string) (menuModel, tea.Cmd) {
+				if stack == "" {
+					return m, nil
+				}
+				return m, tuiSelfCmd("Gen dynamics "+stack, "dynamics", "generate", stack)
+			})
+		return m, nil
 	case "gen_dyn_force":
 		return m, tuiSelfCmd("Force regen ALL", "dynamics", "generate", "all", "force")
+	case "gen_inject":
+		return m, tuiSelfCmd("Gen global inject", "__geninject")
 	case "gen_groups":
 		return m, tuiSelfCmd("Gen sablier groups", "__gensrvs")
 	case "fix_all":

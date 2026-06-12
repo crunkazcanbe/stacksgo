@@ -185,32 +185,59 @@ var tuiStackActions = []tuiAction{
 	{"↓  Proxy OFF", "proxy_off"},
 	{"🎨  Art Inject", "art_inject"},
 	{"🧹  Art Strip", "art_strip"},
+	{"🛠  Build service into this stack…", "build_into"},
 	{"✎  Rename stack", "rename"},
+	{"🧹  Reclaim disk (unused images)…", "reclaim_menu"},
 	{"🗑  Remove (down -v + archive file)", "remove"},
 	{"✕  Cancel", ""},
 }
 
-// tuiGlobalActions mirrors GLOBAL_ACTIONS.
+// tuiGlobalActions mirrors GLOBAL_ACTIONS (1:1 with the Python menu).
 var tuiGlobalActions = []tuiAction{
 	{"▶  Up — ALL stacks", "up_all"},
 	{"■  Down — ALL stacks", "down_all"},
 	{"↺  Restart — ALL stacks", "restart_all"},
 	{"⟳  Recreate — ALL stacks", "recreate_all"},
+	{"⟳  Recreate + Up — ALL", "recreate_up_all"},
 	{"✦  Fix — ALL stacks", "fix_all"},
 	{"✦  Repair — ALL stacks", "repair_all"},
-	{"★  Fix + Repair + Up — ALL", "full_repair_all"},
+	{"◈  Repair + Recreate — ALL", "repair_recreate_all"},
+	{"◈  Repair + Recreate + Up — ALL", "repair_recreate_up_all"},
+	{"★  Fix + Repair + Recreate + Up — ALL", "full_repair_all"},
+	{"◉  Repair + Fix + Recreate + Up — ALL", "deep_repair_all"},
 	{"↑  Scale ON — all", "scale_on_all"},
 	{"↓  Scale OFF — all", "scale_off_all"},
 	{"↑  Proxy ON — all", "proxy_on_all"},
 	{"↓  Proxy OFF — all", "proxy_off_all"},
-	{"🧹  Reclaim disk report", "reclaim_report"},
+	{"🧹  Reclaim disk (unused images)", "reclaim_menu"},
 	{"✕  Cancel", ""},
+}
+
+// tuiReclaimActions mirrors RECLAIM_ACTIONS — the tiered reclaim submenu.
+var tuiReclaimActions = []tuiAction{
+	{"👁  Report — what's reclaimable", "reclaim_report"},
+	{"🧹  Safe clean — unused + dangling", "reclaim_safe"},
+	{"🔥  Aggressive — all but container-bound", "reclaim_aggressive"},
+	{"💥  EVERYTHING — incl. in-use (force)", "reclaim_everything"},
+	{"✕  Cancel", ""},
+}
+
+// openReclaimPopup shows the tiered reclaim submenu (shared by the ALL-stacks
+// popup and the per-stack menu — mirrors Python's reclaim_menu).
+func (m menuModel) openReclaimPopup() (menuModel, tea.Cmd) {
+	m.popup = tuiActionPopup("🧹 Reclaim disk", tuiReclaimActions,
+		func(a string) (menuModel, tea.Cmd) { return m.doGlobalAction(a) })
+	return m, nil
 }
 
 func (m menuModel) doStackAction(name, action string) (menuModel, tea.Cmd) {
 	switch action {
 	case "", "cancel":
 		return m, nil
+	case "build_into":
+		return m.doBuildAction("build_into")
+	case "reclaim_menu":
+		return m.openReclaimPopup()
 	case "up":
 		return m, tuiSelfCmd("Up "+name, "up", name)
 	case "down":
@@ -302,8 +329,34 @@ func (m menuModel) doGlobalAction(action string) (menuModel, tea.Cmd) {
 		return m, tuiSelfCmd("Proxy ON all", "proxy", "on")
 	case "proxy_off_all":
 		return m, tuiSelfCmd("Proxy OFF all", "proxy", "off")
+	case "recreate_up_all":
+		return m, tuiSelfCmd("Recreate+Up ALL", "up", "recreate")
+	case "repair_recreate_all":
+		return m, tuiSelfCmd("Repair+Recreate ALL", "up", "repair", "recreate")
+	case "repair_recreate_up_all":
+		return m, tuiSelfCmd("Repair+Recreate+Up ALL", "up", "repair", "recreate")
+	case "deep_repair_all":
+		return m, tuiSelfCmd("Repair+Fix+Recreate+Up ALL", "up", "repair", "fix", "recreate")
+	case "reclaim_menu":
+		return m.openReclaimPopup()
 	case "reclaim_report":
 		return m, tuiSelfCmd("Reclaim report", "reclaim", "report", "--all")
+	case "reclaim_safe":
+		return m, tuiSelfCmd("Reclaim safe", "reclaim", "clean", "--auto")
+	case "reclaim_aggressive":
+		return m, tuiSelfCmd("Reclaim aggressive", "reclaim", "clean", "--aggressive", "--auto")
+	case "reclaim_everything":
+		return m.tuiConfirmAndRun("Reclaim EVERYTHING — incl. in-use images?",
+			"💥  YES — nuke all reclaimable images",
+			"Reclaim everything", "reclaim", "clean", "--everything", "--auto")
 	}
+	return m, nil
+}
+
+// tuiConfirmAndRun shows a danger confirm, then runs a self-command on Yes.
+func (m menuModel) tuiConfirmAndRun(title, danger, runTitle string, args ...string) (menuModel, tea.Cmd) {
+	m.popup = tuiConfirmPopup(title, danger, func() (menuModel, tea.Cmd) {
+		return m, tuiSelfCmd(runTitle, args...)
+	})
 	return m, nil
 }

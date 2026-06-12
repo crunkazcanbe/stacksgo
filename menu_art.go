@@ -18,6 +18,8 @@ var tuiArtItems = []tuiAction{
 	{"Strip art from ALL dynamics", "art_strip_dyn"},
 	{"View art.conf", "view_art"},
 	{"View stack_urls.conf", "view_urls"},
+	{"Edit art.conf (in $EDITOR)", "edit_art"},
+	{"Edit stack_urls.conf (in $EDITOR)", "edit_urls"},
 	{"Generate dynamics from ALL stacks", "gen_dyn_all"},
 	{"Force regenerate ALL dynamics", "gen_dyn_force"},
 	{"Repair ALL dynamic configs", "repair_dyn"},
@@ -56,6 +58,10 @@ func (m menuModel) doArtAction(action string) (menuModel, tea.Cmd) {
 	case "view_urls":
 		p := filepath.Join(configDir(), "stack_urls.conf")
 		return m, tuiDockerCmd("stack_urls.conf", func() string { return tuiTailFile(p, 400) })
+	case "edit_art":
+		return m, tuiEditFile(filepath.Join(configDir(), "art.conf"))
+	case "edit_urls":
+		return m, tuiEditFile(filepath.Join(configDir(), "stack_urls.conf"))
 	case "gen_dyn_all":
 		return m, tuiSelfCmd("Gen ALL dynamics", "dynamics", "generate", "all")
 	case "gen_dyn_force":

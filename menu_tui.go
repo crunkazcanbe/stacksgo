@@ -92,6 +92,7 @@ type tuiData struct {
 	Stacks     []tuiStack
 	MemStats   map[string]string // container -> "used / limit"
 	ImgSizes   map[string]string // image -> size string
+	Net        *tuiNetData       // IP/port collision scan (heavy — done in bg collect, not in render)
 	LastUpdate time.Time
 }
 
@@ -156,7 +157,25 @@ func tuiCollect() tuiData {
 
 	// Stacks from the .yml files in stacksDir.
 	d.Stacks = tuiScanStacks(info)
+
+	// Network collision scan (heavy: 172 networks) — done HERE in the background
+	// collect, never in the render path, so the Network tab can't freeze the UI.
+	d.Net = tuiCollectNetData()
 	return d
+}
+
+// tuiCollectNetData runs the IP/port collision scan once (was inline in the
+// render path via ensureNetData, which re-ran it every frame → froze the menu).
+func tuiCollectNetData() *tuiNetData {
+	ip, port := getCollisions()
+	return &tuiNetData{
+		ipCol:   ip,
+		portCol: port,
+		ipMap:   scanAllIPs(),
+		portMap: scanAllPorts(),
+		nextIP:  getNextAvailableIP(),
+		conf:    collisionLoadConf(),
+	}
 }
 
 // tuiMemStats fetches per-container memory usage. The Engine API has no batch
@@ -246,8 +265,38 @@ func tuiHumanBytes(n int64) string {
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 
+// tuiRefreshCmd runs ONE data collect and returns it. It must never be fired
+// while a previous refresh is still in flight — overlapping collects contend on
+// Docker (docker stats + API) and deadlock. The model chains the next refresh
+// only after tuiDataMsg arrives (see Update), guaranteeing single-in-flight.
 func tuiRefreshCmd() tea.Cmd {
-	return func() tea.Msg { return tuiDataMsg{data: tuiCollect()} }
+	return func() (msg tea.Msg) {
+		defer func() {
+			if recover() != nil {
+				// Never let a collect panic wedge the menu — recover and keep
+				// the previous snapshot (empty here; next tick retries).
+				msg = tuiDataMsg{data: tuiData{}}
+			}
+		}()
+		return tuiDataMsg{data: tuiCollect()}
+	}
+}
+
+// tuiRefreshTickMsg fires after a delay to kick off the NEXT (non-overlapping)
+// refresh. tuiRefreshAfter schedules it.
+type tuiRefreshTickMsg time.Time
+
+func tuiRefreshAfter(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg { return tuiRefreshTickMsg(t) })
+}
+
+// Loading-splash animation: a fast tick that runs ONLY until the first data
+// snapshot lands, driving the trans-flag shimmer on the loading screen so the
+// menu never shows an empty frame during the ~10s first collect.
+type tuiLoadingTickMsg struct{}
+
+func tuiLoadingTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tuiLoadingTickMsg{} })
 }
 
 func tuiTickCmd() tea.Cmd {
@@ -283,7 +332,9 @@ type menuModel struct {
 	// popup state (action menu / confirm / text input / output)
 	popup *tuiPopup
 
-	quit bool
+	refreshing bool // true while a data collect is in flight (prevents overlap)
+	loadFrame  int  // animation frame for the loading splash (trans-flag shimmer)
+	quit       bool
 }
 
 func tuiFilterableTab(tab int) bool {
@@ -291,25 +342,46 @@ func tuiFilterableTab(tab int) bool {
 }
 
 func (m menuModel) Init() tea.Cmd {
-	return tea.Batch(tuiRefreshCmd(), tuiTickCmd())
+	return tea.Batch(tuiRefreshCmd(), tuiTickCmd(), tuiLoadingTick(), tuiLogDumpCmd())
 }
 
 func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// Force a full repaint on resize — when the on-screen keyboard slides
+		// in/out the terminal resizes, and without clearing, stale characters
+		// from the old size get left behind (scrambled). ClearScreen fixes it.
 		m.width, m.height = msg.Width, msg.Height
-		return m, nil
+		return m, tea.ClearScreen
 
 	case tuiTickMsg:
+		// Clock only — does NOT trigger a data refresh (refreshes are chained
+		// off tuiDataMsg so only one ever runs at a time).
 		m.now = time.Time(msg)
 		if m.tab == tabUpdates {
 			m.updateRows, m.updateSum = tuiBuildUpdateRows()
 		}
-		return m, tea.Batch(tuiTickCmd(), tuiRefreshCmd())
+		return m, tuiTickCmd()
 
 	case tuiDataMsg:
 		m.data = msg.data
-		return m, nil
+		m.refreshing = false
+		// Schedule the next refresh AFTER this one landed → never overlaps.
+		return m, tuiRefreshAfter(8 * time.Second)
+
+	case tuiRefreshTickMsg:
+		if m.refreshing {
+			return m, nil
+		}
+		m.refreshing = true
+		return m, tuiRefreshCmd()
+
+	case tuiLoadingTickMsg:
+		if !m.data.LastUpdate.IsZero() {
+			return m, nil // first data landed — stop the splash animation
+		}
+		m.loadFrame++
+		return m, tuiLoadingTick()
 
 	case tuiActionDoneMsg:
 		m.popup = &tuiPopup{
@@ -317,6 +389,10 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			title: msg.title,
 			lines: strings.Split(strings.TrimRight(msg.output, "\n"), "\n"),
 		}
+		if m.refreshing {
+			return m, nil
+		}
+		m.refreshing = true
 		return m, tuiRefreshCmd()
 
 	case tea.KeyMsg:
@@ -325,12 +401,97 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// loadingView is the splash shown during the first data collect: the STACKS
+// word-logo in trans-flag colors that shimmer (colors wave down the lines each
+// frame), a Docker whale + moving loading bar, and the version bottom-left —
+// the loading screen the Python menu had, so the menu never looks empty/broken.
+func (m menuModel) loadingView() string {
+	// The trans-pride Docker whale — identical art to the Python menu, with the
+	// same flowing per-column color wave (blue · pink · white · pink · blue).
+	art := []string{
+		"                  ##        .",
+		"            ## ## ##       ==",
+		"         ## ## ## ## ##   ===",
+		"     /=====================\\___/ ===",
+		" ~~ {~~  ~~~~  ~~~  ~~~~  ~~ ~ /   ===-  ~~~",
+		"     \\______ o            __/",
+		"      \\      \\         __/",
+		"       \\      \\______ __/",
+		"        \\_______________/",
+	}
+	pal := []int{117, 218, 231, 218, 117} // trans flag: blue · pink · white · pink · blue
+	w, h := m.width, m.height
+	artW := 0
+	for _, l := range art {
+		if len(l) > artW {
+			artW = len(l)
+		}
+	}
+	pad := func(vis int) string {
+		if w <= vis {
+			return ""
+		}
+		return strings.Repeat(" ", (w-vis)/2)
+	}
+	var b strings.Builder
+	top := (h - 14) / 2
+	for i := 0; i < top; i++ {
+		b.WriteString("\n")
+	}
+	for _, line := range art {
+		b.WriteString(pad(artW))
+		for col, ch := range line {
+			if ch == ' ' {
+				b.WriteString(" ")
+				continue
+			}
+			band := ((col*len(pal))/artW - m.loadFrame/2) % len(pal)
+			if band < 0 {
+				band += len(pal)
+			}
+			b.WriteString(fmt.Sprintf("\x1b[38;5;%dm%c\x1b[0m", pal[band], ch))
+		}
+		b.WriteString("\n")
+	}
+	// "stacks" label centered under the whale, in pink — like the Python splash.
+	label := "stacks"
+	b.WriteString(pad(len(label)))
+	b.WriteString(fmt.Sprintf("\x1b[38;5;218m%s\x1b[0m\n\n", label))
+	// Docker whale + a moving block on the loading bar.
+	const bw = 26
+	pos := m.loadFrame % bw
+	var bar strings.Builder
+	for i := 0; i < bw; i++ {
+		if i == pos || i == (pos+1)%bw {
+			bar.WriteString("█")
+		} else {
+			bar.WriteString("─")
+		}
+	}
+	barLine := "🐳  " + bar.String()
+	b.WriteString(pad(bw + 4))
+	b.WriteString(fmt.Sprintf("\x1b[38;5;218m%s\x1b[0m\n\n", barLine))
+	msg := "loading your docker stacks…"
+	b.WriteString(pad(len(msg)))
+	b.WriteString(fmt.Sprintf("\x1b[38;5;245m%s\x1b[0m\n", msg))
+	// Version bottom-left, like the splash banner.
+	fill := h - top - 12
+	for i := 0; i < fill; i++ {
+		b.WriteString("\n")
+	}
+	b.WriteString(fmt.Sprintf("\x1b[38;5;245m %s\x1b[0m", stacksVersion()))
+	return b.String()
+}
+
 func (m menuModel) View() string {
 	if m.quit {
 		return ""
 	}
 	if m.width == 0 {
 		return "loading…"
+	}
+	if m.data.LastUpdate.IsZero() {
+		return m.loadingView() // splash until the first collect lands
 	}
 	var b strings.Builder
 
@@ -399,9 +560,10 @@ func (m menuModel) View() string {
 
 	view := b.String()
 
-	// Popup overlay (rendered below the main view for simplicity)
+	// Popup = a centered modal over the screen (like the Python menu), instead
+	// of glued to the bottom under everything.
 	if m.popup != nil {
-		view += "\n\n" + m.popup.render(m.width)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.popup.render(m.width))
 	}
 	return view
 }
@@ -423,9 +585,9 @@ func (m menuModel) footerHints() []string {
 	case tabBuild:
 		return []string{"↑↓ Nav", "ENTER Run", "←→ Tabs", "q Quit"}
 	case tabConfigs:
-		return []string{"↑↓ Nav", "ENTER View", "←→ Tabs", "q Quit"}
+		return []string{"↑↓ Nav", "ENTER View", "e Edit", "←→ Tabs", "q Quit"}
 	case tabNetwork:
-		return []string{"a Edit", "s Scan", "←→ Tabs", "q Quit"}
+		return []string{"a Edit", "s Scan", "d Dedupe", "e YAML", "←→ Tabs", "q Quit"}
 	case tabUpdates:
 		return []string{"↑↓ Nav", "a-z Jump", "/ Search", "ENTER Detail", "C Check", "P Pull", "q Quit"}
 	case tabSettings:

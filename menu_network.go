@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,7 +40,12 @@ func (m *menuModel) ensureNetData() *tuiNetData {
 }
 
 func (m menuModel) renderNetwork() string {
-	nd := (&m).ensureNetData()
+	// Read the scan done in the background collect — NEVER scan in the render
+	// path (that re-ran the full 172-network scan every frame and froze the UI).
+	nd := m.data.Net
+	if nd == nil {
+		return "\n  scanning networks… (first load)\n"
+	}
 	var b strings.Builder
 	p := func(style interface{ Render(...string) string }, s string) {
 		b.WriteString(style.Render(truncate("  "+s, m.width-1)))
@@ -159,6 +165,15 @@ func (m menuModel) handleNetworkKey(k string) (tea.Model, tea.Cmd) {
 		})
 	case "r", "R":
 		m.netCache = nil
+	case "e", "E":
+		// open stacks.yaml in $EDITOR (mirrors the Python Network 'e' key)
+		return m, tuiEditFile(filepath.Join(configDir(), "stacks.yaml"))
+	case "d", "D":
+		// Dedupe: report duplicate container_names across stacks + the
+		// recommended keeper (mirrors the Python Network 'd' key). Resolving a
+		// dup is done from the container menu's Remove/purge actions (FIX_DEDUPE
+		// also auto-resolves on `fix`).
+		return m, tuiSelfCmd("Dedupe — duplicate container_names", "dedupe")
 	}
 	return m, nil
 }

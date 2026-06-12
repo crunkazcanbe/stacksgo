@@ -205,6 +205,12 @@ func (m menuModel) handlePopupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			val := p.actions[p.sel].Value
+			// "Cancel" just closes the popup — its callback is a no-op and the
+			// closure could re-show a stale popup, which left the user stuck.
+			if val == "cancel" || strings.EqualFold(p.actions[p.sel].Label, "Cancel") {
+				m.popup = nil
+				return m, nil
+			}
 			cb := p.onSelect
 			m.popup = nil
 			if cb != nil {

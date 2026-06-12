@@ -26,16 +26,35 @@ type tuiLogRow struct {
 // followed by the live containers (so per-container `docker logs` is reachable).
 func tuiLogRows(d tuiData) []tuiLogRow {
 	var rows []tuiLogRow
-	dir := dispDataDir()
-	matches, _ := filepath.Glob(filepath.Join(dir, "stacks_*.log"))
-	sort.Strings(matches)
-	for _, f := range matches {
+	seen := map[string]bool{}
+	addFile := func(f string) {
+		base := filepath.Base(f)
+		if seen[base] {
+			return
+		}
+		seen[base] = true
 		var kb int64
 		if st, err := os.Stat(f); err == nil {
 			kb = st.Size() / 1024
 		}
-		rows = append(rows, tuiLogRow{Label: filepath.Base(f), Path: f, SizeKB: kb})
+		rows = append(rows, tuiLogRow{Label: base, Path: f, SizeKB: kb})
 	}
+	// All logs live in logDir(): engine logs (stacks_*.log) + per-container
+	// dumps (<name>.log). Also sweep the data dir for any legacy stray logs.
+	ld := logDir()
+	for _, pat := range []string{"stacks_*.log", "*.log"} {
+		matches, _ := filepath.Glob(filepath.Join(ld, pat))
+		sort.Strings(matches)
+		for _, f := range matches {
+			addFile(f)
+		}
+	}
+	legacy, _ := filepath.Glob(filepath.Join(dispDataDir(), "stacks_*.log"))
+	sort.Strings(legacy)
+	for _, f := range legacy {
+		addFile(f)
+	}
+	// Live containers (on-demand `docker logs`).
 	for _, c := range d.Containers {
 		rows = append(rows, tuiLogRow{Label: "▶ " + c.Name + " (docker logs)", Container: c.Name})
 	}
@@ -45,7 +64,7 @@ func tuiLogRows(d tuiData) []tuiLogRow {
 func (m menuModel) renderLogs() string {
 	rows := tuiLogRows(m.data)
 	var b strings.Builder
-	b.WriteString(tuiAccentStyle.Render("  DOCKER LOGS — ENTER shows the recent tail"))
+	b.WriteString(tuiAccentStyle.Render("  DOCKER LOGS — ENTER shows the recent tail · d = save every container log to the logs folder"))
 	b.WriteString("\n")
 	b.WriteString(tuiDimStyle.Render("  " + strings.Repeat("─", maxInt(0, m.width-4))))
 	b.WriteString("\n")
@@ -68,11 +87,9 @@ func (m menuModel) renderLogs() string {
 		if i == m.sel {
 			b.WriteString(tuiSelectedStyle.Render(truncate("  ▶ "+line, m.width-2)))
 		} else {
-			st := tuiNormalStyle
-			if r.Container != "" {
-				st = tuiGreenStyle
-			}
-			b.WriteString(st.Render(truncate("    "+line, m.width-2)))
+			// One consistent style for every row (no green/white mix); the
+			// "▶ … (docker logs)" prefix already marks live containers.
+			b.WriteString(tuiNormalStyle.Render(truncate("    "+line, m.width-2)))
 		}
 		b.WriteString("\n")
 	}
@@ -85,6 +102,12 @@ func (m menuModel) handleLogsKey(k string) (tea.Model, tea.Cmd) {
 		m.sel = maxInt(0, len(rows)-1)
 	}
 	switch k {
+	case "d":
+		// Save every running container's log to the logs folder.
+		return m, tuiDockerCmd("Saving container logs", func() string {
+			n := dumpContainerLogs()
+			return fmt.Sprintf("Wrote %d container log file(s) to:\n%s", n, logDir())
+		})
 	case "up", "k", "down", "j", "pgup", "pgdown", "home", "end":
 		m.moveCursor(k, len(rows))
 	case "enter", "tab":
@@ -101,6 +124,12 @@ func (m menuModel) handleLogsKey(k string) (tea.Model, tea.Cmd) {
 		})
 	}
 	return m, nil
+}
+
+// tuiLogDumpCmd refreshes the per-container log files in the background (fired
+// once when the menu opens so the logs folder is populated). Fire-and-forget.
+func tuiLogDumpCmd() tea.Cmd {
+	return func() tea.Msg { dumpContainerLogs(); return nil }
 }
 
 // tuiTailFile returns the last n lines of a file (best-effort, full read).

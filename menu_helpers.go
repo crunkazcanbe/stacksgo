@@ -87,6 +87,28 @@ func tuiSelfCmd(title string, args ...string) tea.Cmd {
 	return tuiShellCmd(title, selfExe(), args...)
 }
 
+// tuiEditFile suspends the TUI, opens path in $EDITOR (nano fallback), then
+// resumes — mirrors the Python menu's "open in $EDITOR" on Configs/Art/Network.
+func tuiEditFile(path string) tea.Cmd {
+	ed := os.Getenv("EDITOR")
+	if ed == "" {
+		ed = os.Getenv("VISUAL")
+	}
+	if ed == "" {
+		ed = "nano"
+	}
+	return tea.ExecProcess(exec.Command(ed, path), func(error) tea.Msg { return nil })
+}
+
+// tuiExecSelf suspends the TUI and runs `stacks <args…>` INTERACTIVELY (shares
+// the real terminal stdin/stdout/stderr), then resumes — used for the build
+// wizard and anything else that needs live prompts (fzf, buildAsk).
+func tuiExecSelf(args ...string) tea.Cmd {
+	c := exec.Command(selfExe(), args...)
+	c.Env = dockerEnv()
+	return tea.ExecProcess(c, func(error) tea.Msg { return nil })
+}
+
 // cliSelf is the synchronous variant for use inside another command closure.
 func cliSelf(args ...string) string {
 	cmd := exec.Command(selfExe(), args...)

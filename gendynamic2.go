@@ -1166,9 +1166,24 @@ func gd2BuildChain(c map[string]interface{}, sablierName string) []string {
 	return out
 }
 
-// gd2RenderRouter mirrors render_router().
+// gd2RouterDomains is the full list of domains each router should match
+// (primary first, then any domain.extra entries). Set per-generate. Primary
+// stays first so the Host(`sub.primary`) harvest/get_host regexes keep working.
+var gd2RouterDomains []string
+
+// gd2RenderRouter mirrors render_router(). Emits Host(`sub.d1`) || Host(`sub.d2`) ...
+// across every configured domain so the same router answers on .com, .dev, etc.
 func gd2RenderRouter(name, host, domain string, chain []string) string {
-	return fmt.Sprintf("    %s-router:\n      rule: \"Host(`%s.%s`)\"\n      service: %s-svc\n", name, host, domain, name) +
+	doms := gd2RouterDomains
+	if len(doms) == 0 {
+		doms = []string{domain}
+	}
+	clauses := make([]string, 0, len(doms))
+	for _, d := range doms {
+		clauses = append(clauses, fmt.Sprintf("Host(`%s.%s`)", host, d))
+	}
+	rule := strings.Join(clauses, " || ")
+	return fmt.Sprintf("    %s-router:\n      rule: \"%s\"\n      service: %s-svc\n", name, rule, name) +
 		fmt.Sprintf("      entryPoints: [web]\n      middlewares: [%s]\n", strings.Join(chain, ", "))
 }
 
@@ -1438,6 +1453,14 @@ func gendynamic2Main(args []string) {
 	domain := gd2Str(dom["primary"])
 	if gd2Str(dom["use"]) == "secondary" {
 		domain = gd2Str(dom["secondary"])
+	}
+	// Routers match the primary domain first (keeps harvest/get_host regexes valid),
+	// then every domain.extra entry (e.g. the Pangolin-tunnelled .dev/.run/.site/.online).
+	gd2RouterDomains = []string{domain}
+	for _, e := range gd2AsList(gd2GetOr(dom, "extra", []interface{}{})) {
+		if s := gd2Str(e); s != "" && s != domain {
+			gd2RouterDomains = append(gd2RouterDomains, s)
+		}
 	}
 	var exclSuffixes []string
 	for _, s := range gd2AsList(gd2GetOr(cfg, "exclude_suffixes", []interface{}{})) {

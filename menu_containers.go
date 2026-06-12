@@ -6,6 +6,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -111,7 +113,15 @@ func (m menuModel) handleContainersKey(k string) (tea.Model, tea.Cmd) {
 		}
 		c := items[m.sel]
 		stackFile := m.stackFileForContainer(c.Name)
-		m.popup = tuiActionPopup("Container: "+truncate(c.Name, 24), tuiContainerActions,
+		acts := tuiContainerActions
+		if zeroScaleEnabled() {
+			// insert "⚡ Zero Scale…" just above the trailing Cancel row
+			n := len(tuiContainerActions)
+			acts = append([]tuiAction{}, tuiContainerActions[:n-1]...)
+			acts = append(acts, tuiAction{"⚡  Zero Scale…", "zeroscale"})
+			acts = append(acts, tuiContainerActions[n-1])
+		}
+		m.popup = tuiActionPopup("Container: "+truncate(c.Name, 24), acts,
 			func(action string) (menuModel, tea.Cmd) {
 				return m.doContainerAction(c.Name, stackFile, action)
 			})
@@ -165,9 +175,62 @@ var tuiContainerActions = []tuiAction{
 	{"↓  Proxy OFF", "proxy_off"},
 	{"🔍  Inspect", "inspect"},
 	{"⏪  Rollback image…", "rollback"},
+	{"🌐  Edit IP", "edit_ip"},
 	{"✎  Rename container", "rename"},
+	{"🧹  Reclaim disk (unused images)…", "reclaim_menu"},
 	{"🗑  Remove (force rm)", "remove"},
 	{"✕  Cancel", ""},
+}
+
+// ipRe validates a dotted IPv4 (mirrors the Python edit_ip check).
+var ipRe = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`)
+
+// containerCurrentIP reads the container's ipv4_address from its stack file block.
+func containerCurrentIP(stackFile, name string) string {
+	data, err := readFile(stackFile)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(data, "\n")
+	inBlock := false
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "container_name:") {
+			inBlock = strings.TrimSpace(strings.TrimPrefix(t, "container_name:")) == name
+			continue
+		}
+		if inBlock && strings.HasPrefix(t, "ipv4_address:") {
+			return strings.TrimSpace(strings.TrimPrefix(t, "ipv4_address:"))
+		}
+	}
+	return ""
+}
+
+// applyContainerIP rewrites the container's ipv4_address in its stack file block.
+func applyContainerIP(stackFile, name, newIP string) bool {
+	data, err := readFile(stackFile)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(data, "\n")
+	inBlock, changed := false, false
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "container_name:") {
+			inBlock = strings.TrimSpace(strings.TrimPrefix(t, "container_name:")) == name
+			continue
+		}
+		if inBlock && strings.HasPrefix(t, "ipv4_address:") {
+			indent := ln[:len(ln)-len(strings.TrimLeft(ln, " "))]
+			lines[i] = indent + "ipv4_address: " + newIP
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return false
+	}
+	return os.WriteFile(stackFile, []byte(strings.Join(lines, "\n")), 0644) == nil
 }
 
 func (m menuModel) doContainerAction(name, stackFile, action string) (menuModel, tea.Cmd) {
@@ -177,6 +240,35 @@ func (m menuModel) doContainerAction(name, stackFile, action string) (menuModel,
 	}
 	switch action {
 	case "", "cancel":
+		return m, nil
+	case "zeroscale":
+		return m.openZeroScalePopup(name)
+	case "reclaim_menu":
+		return m, tuiSelfCmd("Reclaim — "+name, "reclaim", "report", "--all")
+	case "edit_ip":
+		cur := containerCurrentIP(stackFile, name)
+		def := cur
+		if def == "" {
+			def = "192.168.1."
+		}
+		m.popup = tuiInputPopup("Edit IP — "+truncate(name, 18), "New IP:", def,
+			func(newIP string) (menuModel, tea.Cmd) {
+				newIP = strings.TrimSpace(newIP)
+				if newIP == "" || newIP == cur {
+					return m, nil
+				}
+				if !ipRe.MatchString(newIP) {
+					m.popup = tuiOutputPopup("Edit IP", []string{"Invalid IP: " + newIP})
+					return m, nil
+				}
+				if stackFile != "" {
+					applyContainerIP(stackFile, name, newIP)
+				}
+				if stackName != "" {
+					return m, tuiSelfCmd("Edit IP "+name, "up", stackName, name, "recreate")
+				}
+				return m, tuiShellCmd("Restart "+name, "docker", "restart", name)
+			})
 		return m, nil
 	case "start":
 		return m, tuiDockerCmd("Start "+name, func() string {

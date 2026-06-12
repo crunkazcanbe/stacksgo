@@ -148,6 +148,9 @@ type dispArgs struct {
 	force    bool
 	clean    bool
 	info     bool
+	doFix      bool // `… fix`      — run `stacks fix <stack>` after the lifecycle op
+	doDynamics bool // `… dynamics` — reconcile/generate dynamics alongside the op
+	doRepair   bool // `… repair`   — run dynamics repair (structural) too
 	stacks   []string // parsed stack tokens (resolved names)
 	services []string // parallel: service for each stack ("" = whole stack)
 	raw      []string // leftover non-flag args (TARGET_ARGS equivalent)
@@ -175,8 +178,15 @@ func dispParse(command string, rest []string) dispArgs {
 			a.clean = true
 		case "info", "i":
 			a.info = true
-		case "d", "detach", "a", "attach", "just", "only", "solo", "single",
-			"repair", "repaire", "fix", "dynamic", "dynamics", "dyn", "continue", "no-fix":
+		case "fix":
+			a.doFix = true
+		case "dynamic", "dynamics", "dyn":
+			a.doDynamics = true
+		case "repair", "repaire":
+			a.doRepair = true
+		case "no-fix":
+			a.doFix = false
+		case "d", "detach", "a", "attach", "just", "only", "solo", "single", "continue":
 			// recognized modifiers that don't change lifecycle behavior here
 		default:
 			targets = append(targets, arg)
@@ -335,6 +345,19 @@ func dispUp(a dispArgs) {
 		extra = append(extra, "--force-recreate")
 	}
 
+	// `up … dynamics [fix] [repair]` — reconcile/generate the dynamic files
+	// up-front (mirrors bash run_dynamics_fix before the deploy loop). Generation
+	// is non-destructive: it only creates MISSING dynamic files (no --force), then
+	// reconciles names against the compose files.
+	if a.doDynamics {
+		fmt.Println("\n\x1b[1;35m⚡ Dynamics: generate-missing + reconcile names…\x1b[0m")
+		dispDynamicsGenerate([]string{"all"}, a.force)
+		if a.doRepair {
+			dispRunDynamicsFix("repair", []string{"all"})
+		}
+		dispRunDynamicsFix("fix", []string{"all"})
+	}
+
 	deploy := func(stack, service string) {
 		file := dispResolveStackFile(stack)
 		if file == "" {
@@ -360,6 +383,12 @@ func dispUp(a dispArgs) {
 			dispCompose(file, args...)
 		}
 		dispSablierRestart()
+		// `up … fix` — run the full per-stack fix after it's deployed (mirrors
+		// bash running stacks_fix.py per stack when DO_FIX=1). This includes the
+		// name-sync phase, so names propagate into compose + dynamics.
+		if a.doFix {
+			cmdFix([]string{stack})
+		}
 	}
 
 	if len(a.stacks) == 0 {
@@ -952,7 +981,10 @@ func dispDynamics(a dispArgs, rest []string) {
 	}
 
 	if gen {
-		dispDynamicsGenerate(genTargets, genForce)
+		// explicit `dynamics generate` = full rebuild (force), matching the bash
+		// behavior; `dynamics generate force` is the same. Use `dynamics fix` for
+		// generate-missing-only.
+		dispDynamicsGenerate(genTargets, true)
 		return
 	}
 	if doFix || doRepair {
@@ -960,6 +992,12 @@ func dispDynamics(a dispArgs, rest []string) {
 		if len(names) == 0 {
 			names = []string{"all"}
 		}
+		// First create any MISSING dynamic files from the compose (non-destructive
+		// unless the `force` word was given), so `dynamics fix` brings every stack
+		// up to a full dynamic file, then reconciles names. This is the user's
+		// rule: fix should generate the whole dynamic file, but never overwrite an
+		// existing one unless forced.
+		dispDynamicsGenerate(names, genForce)
 		if doRepair {
 			fmt.Println("\n\x1b[1;35m⚡ Repairing dynamics (structural)…\x1b[0m")
 			dispRunDynamicsFix("repair", names)
@@ -1051,15 +1089,26 @@ func dispDynamicsGenerate(targets []string, force bool) {
 
 	rich := dispConfBool("GEN_RICH", true)
 	mergeEP := rich && dispConfBool("GEN_DB_ENTRYPOINTS", true)
-	_ = force // bash always passes --force for `generate` (rebuild intent)
+	// force=true → overwrite existing dynamic files (full rebuild); force=false →
+	// the generators skip files that already exist, so only MISSING ones are
+	// created. This is what lets `dynamics fix` / `up … dynamics` regenerate just
+	// the missing files without clobbering hand-tuned ones (user's rule: don't
+	// regenerate an existing file unless forced).
 	for _, t := range targets {
-		args := []string{t, "--force"}
+		args := []string{t}
+		if force {
+			args = append(args, "--force")
+		}
 		if mergeEP {
 			args = append(args, "--merge-entrypoints")
 		}
 		dispRunGenerator(rich, args)
 	}
-	fmt.Println("  \x1b[1;36mGenerate complete.\x1b[0m Reload Traefik to apply.")
+	if force {
+		fmt.Println("  \x1b[1;36mGenerate complete (forced rebuild).\x1b[0m Reload Traefik to apply.")
+	} else {
+		fmt.Println("  \x1b[1;36mGenerate complete (missing files only).\x1b[0m Reload Traefik to apply.")
+	}
 }
 
 // dispRunGenerator dispatches to the already-ported generators. The rich path

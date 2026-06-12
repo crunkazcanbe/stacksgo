@@ -134,6 +134,16 @@ func (m menuModel) handleConfigsKey(k string) (tea.Model, tea.Cmd) {
 			}
 			return tuiTailFile(r.Path, 600)
 		})
+	case "e", "E":
+		// open the selected config file in $EDITOR (mirrors the Python menu)
+		if len(rows) == 0 {
+			return m, nil
+		}
+		r := rows[m.sel]
+		if r.IsDir {
+			return m, nil
+		}
+		return m, tuiEditFile(r.Path)
 	}
 	return m, nil
 }
