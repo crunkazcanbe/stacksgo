@@ -1038,6 +1038,7 @@ func dispGet(a dispArgs) {
 // ============================================================================
 
 func dispKill(a dispArgs) {
+	banner()
 	if len(a.raw) == 0 {
 		fmt.Println("\x1b[1;31m✘ Usage: stacks kill <container|stack>\x1b[0m")
 		os.Exit(1)
@@ -1536,6 +1537,7 @@ func dispCopyFile(src, dst string) error {
 // ============================================================================
 
 func dispReload(a dispArgs) {
+	banner()
 	fmt.Println("\x1b[1;34m▶ Reloading stacks…\x1b[0m")
 	conf := filepath.Join(configDir(), "stacks.conf")
 	if dispFileExists(conf) {
@@ -1629,6 +1631,7 @@ func dispClean(a dispArgs) {
 // ============================================================================
 
 func dispArt(a dispArgs) {
+	banner()
 	if len(a.raw) == 0 {
 		fmt.Println("\x1b[1;31m✘ Error: Specify 'inject' or 'strip' (e.g., stacks art inject)\x1b[0m")
 		os.Exit(1)
@@ -1762,6 +1765,7 @@ func dispCollapseBlankLines(path string) {
 // ============================================================================
 
 func dispInjectStrip(command string, a dispArgs) {
+	banner()
 	target := "--all"
 	if len(a.raw) > 0 {
 		target = a.raw[0]
@@ -1791,6 +1795,7 @@ func dispScale(a dispArgs) { dispScaleProxy("scale", a) }
 func dispProxy(a dispArgs) { dispScaleProxy("proxy", a) }
 
 func dispScaleProxy(kind string, a dispArgs) {
+	banner()
 	// scale requires sablier present (bash short-circuits if absent)
 	if kind == "scale" {
 		if containerState("sablier") == "" {
@@ -2004,6 +2009,7 @@ func dispListSnapshots() {
 // ============================================================================
 
 func dispBackup(a dispArgs) {
+	banner()
 	confPath := filepath.Join(configDir(), "backup.conf")
 	if !dispFileExists(confPath) {
 		fmt.Printf("\x1b[1;31m✘ No backup config at %s\x1b[0m\n", confPath)
