@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/x/term"
 )
 
 // ===== from dispatch.go =====
@@ -421,18 +423,54 @@ func dispComposeQ(file string, args ...string) bool {
 	}
 }
 
-// dispShowTail prints the last n lines of s under a header (for the `info` flag).
+// dispTermWidth returns the terminal width (falls back to 80).
+func dispTermWidth() int {
+	if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil && w > 10 {
+		return w
+	}
+	if c := os.Getenv("COLUMNS"); c != "" {
+		if n, err := strconv.Atoi(c); err == nil && n > 10 {
+			return n
+		}
+	}
+	return 80
+}
+
+// dispShowTail prints the last n lines of s inside a pretty rounded box with a
+// title (for the `info` flag) — one box per log, like the Python version.
 func dispShowTail(header, s string, n int) {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	var lines []string
+	for _, l := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, strings.TrimRight(l, " \t"))
+		}
+	}
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-	fmt.Printf("\x1b[1;35m── %s (last %d) ──\x1b[0m\n", header, n)
-	for _, l := range lines {
-		if strings.TrimSpace(l) != "" {
-			fmt.Printf("  \x1b[2m%s\x1b[0m\n", l)
-		}
+	w := dispTermWidth() - 2
+	if w > 100 {
+		w = 100
+	} else if w < 30 {
+		w = 30
 	}
+	const c = "\x1b[38;5;81m" // cyan border
+	const x = "\x1b[0m"
+	title := vtrunc(" "+header+" ", w-4)
+	pad := w - 2 - vw(title)
+	if pad < 0 {
+		pad = 0
+	}
+	fmt.Printf("%s╭─%s%s╮%s\n", c, title, strings.Repeat("─", pad), x)
+	for _, l := range lines {
+		l = vtrunc(l, w-4)
+		sp := w - 4 - vw(l)
+		if sp < 0 {
+			sp = 0
+		}
+		fmt.Printf("%s│%s \x1b[2m%s\x1b[0m%s %s│%s\n", c, x, l, strings.Repeat(" ", sp), c, x)
+	}
+	fmt.Printf("%s╰%s╯%s\n", c, strings.Repeat("─", w-2), x)
 }
 
 // dispCapturedFix runs the fix (or repair) engine for one stack behind the
