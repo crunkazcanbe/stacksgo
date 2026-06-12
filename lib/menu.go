@@ -4010,8 +4010,8 @@ func tuiViewLog(title, path string) tea.Cmd {
 // stacksRelease is the major version. Jumped to 3.0 for the milestone rewrite:
 // v2.x = the Docker Engine API migration; v3.0 = the full Go rewrite (compiled,
 // API-native). Bump this by hand for future milestones.
-const stacksRelease = "3.0"
-const stacksCodename = "Go" // the v3.0 leap: bash+python → one Go binary on the Docker API
+const stacksRelease = "3.1"
+const stacksCodename = "Go" // v3.0 = the rewrite; v3.1 = loading bar everywhere + force + art both
 
 // stacksVersion = "v3.0 (Go) · <commitcount>·<shortsha>". The release is explicit;
 // the commit-count·sha (from the git clone, universal repoDir()) is the build tag.
