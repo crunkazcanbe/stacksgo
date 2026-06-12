@@ -843,7 +843,7 @@ func (m menuModel) handleContainersKey(k string) (tea.Model, tea.Cmd) {
 		c := items[m.sel]
 		stackFile := m.stackFileForContainer(c.Name)
 		acts := tuiContainerActions
-		if zeroScaleEnabled() {
+		if zeroScaleAvailable() {
 			// insert "⚡ Zero Scale…" just above the trailing Cancel row
 			n := len(tuiContainerActions)
 			acts = append([]tuiAction{}, tuiContainerActions[:n-1]...)
@@ -2255,8 +2255,24 @@ func loadZSConfig() *zsConfig {
 	if c.Sites == nil {
 		c.Sites = map[string]*zsSite{}
 	}
+	// Layer in the GLOBAL Zero Scale settings from stacks.conf/yaml (the Settings
+	// tab edits those), so the engine honours them. Per-site values in
+	// zeroscale.yaml still win when set.
+	cfg := configLoad()
+	if c.IdleSeconds == 0 {
+		c.IdleSeconds = cfgInt(cfg, "ZERO_SCALE_IDLE", 1800)
+	}
+	if c.PollSeconds == 0 {
+		c.PollSeconds = cfgInt(cfg, "ZERO_SCALE_POLL", 20)
+	}
 	if c.DefaultScreen == "" {
-		c.DefaultScreen = "minecraft"
+		c.DefaultScreen = cfgStrKey(cfg, "ZERO_SCALE_DEFAULT_SCREEN", "minecraft")
+	}
+	if c.TraefikMetrics == "" {
+		c.TraefikMetrics = cfgStrKey(cfg, "ZERO_SCALE_METRICS", "")
+	}
+	if c.WakeBase == "" {
+		c.WakeBase = cfgStrKey(cfg, "ZERO_SCALE_WAKE_BASE", "")
 	}
 	return c
 }

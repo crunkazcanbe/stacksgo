@@ -1291,6 +1291,18 @@ var scalarMap = map[string]string{
 	// ── Zero Scale ↔ Traefik integration ──────────────────────────────────────
 	"auto_detect_traefik":    "AUTO_DETECT_TRAEFIK",    // detect whether Traefik is running (Docker API)
 	"zero_scale_traefik_api": "ZERO_SCALE_TRAEFIK_API", // when Traefik is present, drive Zero Scale via its API
+	"zero_scale_force":       "ZERO_SCALE_FORCE",       // show/use Zero Scale even if Sablier is installed (may conflict)
+	// Zero Scale global engine settings (per-site overrides still live in zeroscale.yaml)
+	"zero_scale_idle":          "ZERO_SCALE_IDLE",          // seconds idle before a site sleeps
+	"zero_scale_poll":          "ZERO_SCALE_POLL",          // seconds between idle/metrics sweeps
+	"zero_scale_default_screen": "ZERO_SCALE_DEFAULT_SCREEN", // default loading screen theme
+	"zero_scale_listen":        "ZERO_SCALE_LISTEN",        // engine HTTP listen addr (e.g. :8787)
+	"zero_scale_wake_base":     "ZERO_SCALE_WAKE_BASE",     // public wake URL base
+	"zero_scale_metrics":       "ZERO_SCALE_METRICS",       // Traefik Prometheus metrics URL
+	"zero_scale_stop_timeout":  "ZERO_SCALE_STOP_TIMEOUT",  // seconds to wait when stopping a sleeping container
+	"zero_scale_show_logs":     "ZERO_SCALE_SHOW_LOGS",     // stream docker logs on the loading screen
+	"zero_scale_log_lines":     "ZERO_SCALE_LOG_LINES",     // how many log lines to tail on the screen
+	"zero_scale_autostop":      "ZERO_SCALE_AUTOSTOP",      // master switch for the idle-sleeper loop
 }
 
 // LIST_MAP: friendly YAML list key -> (internal key, join char).

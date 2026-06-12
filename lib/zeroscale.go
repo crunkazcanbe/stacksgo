@@ -159,6 +159,42 @@ func cmdPark(args []string) {
 	fmt.Printf("\x1b[1;32m✔ parked %d\x1b[0m\n", len(park))
 }
 
+// sablierInstalled reports whether a Sablier container exists (running or not).
+func sablierInstalled() bool {
+	for _, f := range [][]string{
+		{"ps", "-a", "--filter", "ancestor=sablierapp/sablier", "--format", "{{.Names}}"},
+		{"ps", "-a", "--filter", "name=sablier", "--format", "{{.Names}}"},
+	} {
+		if out, err := exec.Command("docker", f...).Output(); err == nil &&
+			strings.TrimSpace(string(out)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// zeroScaleAvailable decides whether the Zero Scale options should be SHOWN.
+// Rules (per the user's design):
+//   - master ZERO_SCALE must be on;
+//   - if Sablier is installed, hide Zero Scale (they'd both fight over wake-on-
+//     visit) UNLESS ZERO_SCALE_FORCE=1 forces it on (the engine then warns);
+//   - Zero Scale needs Traefik to route wakes, so when AUTO_DETECT_TRAEFIK is on
+//     and Traefik isn't detected, hide it too.
+func zeroScaleAvailable() bool {
+	if !zeroScaleEnabled() {
+		return false
+	}
+	cfg := configLoad()
+	forced := cfg["ZERO_SCALE_FORCE"] == "1"
+	if sablierInstalled() && !forced {
+		return false
+	}
+	if cfg["AUTO_DETECT_TRAEFIK"] != "0" && !detectTraefik().present {
+		return false
+	}
+	return true
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
 func cmdZeroScale(args []string) {
@@ -201,6 +237,15 @@ func zeroScaleStatus() {
 	} else {
 		fmt.Printf("  \x1b[33m• Traefik not detected\x1b[0m — Zero Scale options stay hidden / generic-middleware mode\n")
 	}
+	// Sablier conflict-guard
+	if sablierInstalled() {
+		if configLoad()["ZERO_SCALE_FORCE"] == "1" {
+			fmt.Printf("  \x1b[1;31m⚠ Sablier is installed AND zero_scale_force=1\x1b[0m — both wake-on-visit engines are active; they MAY conflict.\n")
+		} else {
+			fmt.Printf("  \x1b[33m• Sablier installed → Zero Scale auto-disabled\x1b[0m (set zero_scale_force=1 to override, retire Sablier to clear)\n")
+		}
+	}
+	fmt.Printf("  options shown in menu: %s\n", boolStr(zeroScaleAvailable()))
 	if _, err := exec.LookPath("docker"); err == nil {
 		if exec.Command("docker", "ps", "-a", "--filter", "name=sablier", "-q").Run() == nil {
 			// informational only
@@ -233,7 +278,7 @@ func zeroScaleEngine() {
 	}
 	listen := os.Getenv("ZS_LISTEN")
 	if listen == "" {
-		listen = ":8787"
+		listen = cfgStrKey(configLoad(), "ZERO_SCALE_LISTEN", ":8787")
 	}
 	ti := detectTraefik()
 	fmt.Printf("🟢 Zero Scale engine on %s  (traefik=%v api=%v)\n", listen, ti.present, ti.useAPI)
@@ -321,7 +366,8 @@ func zsLogsHandler(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("site")
 	c := loadZSConfig()
 	s := c.Sites[key]
-	if s == nil || len(s.Containers) == 0 {
+	cfg := configLoad()
+	if s == nil || len(s.Containers) == 0 || cfg["ZERO_SCALE_SHOW_LOGS"] == "0" {
 		http.NotFound(w, r)
 		return
 	}
@@ -331,7 +377,8 @@ func zsLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	cmd := exec.Command("docker", "logs", "-f", "--tail", "30", s.Containers[0])
+	tail := fmt.Sprintf("%d", cfgInt(cfg, "ZERO_SCALE_LOG_LINES", 30))
+	cmd := exec.Command("docker", "logs", "-f", "--tail", tail, s.Containers[0])
 	pipe, err := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 	if err != nil || cmd.Start() != nil {
@@ -364,10 +411,16 @@ func zeroScaleIdleLoop(ti traefikInfo) {
 	lastReq := map[string]float64{}
 	lastSeen := map[string]time.Time{}
 	for {
+		cfg := configLoad()
 		c := loadZSConfig()
 		poll := c.PollSeconds
 		if poll < 5 {
 			poll = 20
+		}
+		// master switch for the idle-sleeper (wake still works; nothing auto-sleeps)
+		if cfg["ZERO_SCALE_AUTOSTOP"] == "0" {
+			time.Sleep(time.Duration(poll) * time.Second)
+			continue
 		}
 		idle := time.Duration(c.IdleSeconds) * time.Second
 		if idle == 0 {
