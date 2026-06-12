@@ -1915,12 +1915,21 @@ func fxLoadGlobalInjectConf() map[string]string {
 	for k, v := range loadNamed("global_inject") {
 		cfg[k] = v
 	}
+	// `… force` (STACKS_FORCE_ALL=1) overrides the conf: force every inject key.
+	if os.Getenv("STACKS_FORCE_ALL") == "1" {
+		cfg["FORCE_ALL"] = "force"
+		cfg["INJECT_FILL_ALL"] = "force"
+	}
 	if fxLower(cfg["INJECT_FILL_ALL"]) == "1" || fxLower(cfg["INJECT_FILL_ALL"]) == "true" || fxLower(cfg["INJECT_FILL_ALL"]) == "force" {
+		fillVal := "1"
+		if os.Getenv("STACKS_FORCE_ALL") == "1" {
+			fillVal = "force" // force overwrites existing blocks, not just fills gaps
+		}
 		for _, k := range []string{"INJECT_DEPLOY", "INJECT_BLKIO", "INJECT_ULIMITS", "INJECT_COMMON_CAPS",
 			"INJECT_HOSTNAME", "INJECT_STORAGE_OPT", "INJECT_MAC", "INJECT_LABELS",
 			"INJECT_STOP_GRACE", "INJECT_LOGGING", "INJECT_CPUSET"} {
-			if _, ok := cfg[k]; !ok {
-				cfg[k] = "1"
+			if _, ok := cfg[k]; !ok || fillVal == "force" {
+				cfg[k] = fillVal
 			}
 		}
 	}
@@ -2436,6 +2445,7 @@ func cmdFix(args []string) {
 	dryRun := false
 	replaceBrokenFlag := false
 	forceHCFlag := false
+	forceAll := false
 	for _, a := range args {
 		switch {
 		case a == "--dry-run":
@@ -2444,6 +2454,10 @@ func cmdFix(args []string) {
 			replaceBrokenFlag = true
 		case a == "--force-hc":
 			forceHCFlag = true
+		case a == "force" || a == "--force" || a == "force-all" || a == "forceall":
+			// `stacks fix <stack> force` — force EVERYTHING this pass: recreate
+			// healthchecks, force depends + all global-injects, replace broken HCs.
+			forceAll = true
 		case strings.HasPrefix(a, "--"):
 			// other flags (e.g. --all) handled below via positional fallthrough
 			if a == "--all" {
@@ -2455,6 +2469,19 @@ func cmdFix(args []string) {
 	}
 
 	cfg := fxLoadConf()
+	if forceAll {
+		// One switch that makes the whole fix pass aggressive. STACKS_FORCE_ALL is
+		// picked up by fxLoadGlobalInjectConf() to force every INJECT_* key too.
+		os.Setenv("STACKS_FORCE_ALL", "1")
+		forceHCFlag = true
+		replaceBrokenFlag = true
+		cfg["FIX_FORCE_HC"] = "1"
+		cfg["FIX_FORCE_DEPENDS"] = "1"
+		cfg["FIX_FORCE_NETWORKS"] = "1"
+		cfg["FIX_FORCE_VOLUMES"] = "1"
+		cfg["FIX_REPLACE_BROKEN_HC"] = "1"
+		fxpr(fmt.Sprintf("%s   ⚡ FORCE: recreating healthchecks + forcing all injects%s", fxY, fxX))
+	}
 	replaceBroken := replaceBrokenFlag || fxOn(fxGet(cfg, "FIX_REPLACE_BROKEN_HC", "0"))
 	forceHC := forceHCFlag || fxOn(fxGet(cfg, "FIX_FORCE_HC", "0"))
 	sd := cfg["STACKS_DIR"]
@@ -2486,7 +2513,7 @@ func cmdFix(args []string) {
 	}
 
 	fxpr(fmt.Sprintf("\n%s╔══════════════════════════════════════╗%s", fxM, fxX))
-	fxpr(fmt.Sprintf("%s║   🔧 BELLZ STACK FIXER               ║%s", fxM, fxX))
+	fxpr(fmt.Sprintf("%s║   🔧 STACKS FIXER                    ║%s", fxM, fxX))
 	fxpr(fmt.Sprintf("%s╚══════════════════════════════════════╝%s", fxM, fxX))
 	if dryRun {
 		fxpr(fmt.Sprintf("%s   DRY RUN — no files will be written%s", fxY, fxX))

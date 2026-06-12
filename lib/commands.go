@@ -296,13 +296,79 @@ func dispComposeEnv() []string {
 
 // dispCompose runs `docker compose -f <file> <args…>` streaming to the terminal.
 // Returns true on success (exit 0).
+// dispCompose runs a compose command behind the loading bar. If a bar is already
+// active (e.g. inside `up`) it just animates that one; otherwise it spins up a
+// self-contained bar so EVERY lifecycle command (stop/start/restart/down/rm/kill/
+// reload/pull) shows the same bar + live stack/service line — no raw docker spam.
 func dispCompose(file string, args ...string) bool {
+	if luiActive {
+		return dispComposeQ(file, args...)
+	}
+	stack := dispStackFromFile(file)
+	action, svc := dispBarActionSvc(args)
+	luiInit(stack, svc)
+	luiUpdate(action, 45)
+	ok := dispComposeQ(file, args...)
+	luiUpdate("Done", 100)
+	luiClear()
+	return ok
+}
+
+// dispComposeRaw streams docker output straight to the terminal (no bar) — kept
+// for the rare caller that genuinely needs live output.
+func dispComposeRaw(file string, args ...string) bool {
 	full := append([]string{"compose", "-f", file}, args...)
 	cmd := exec.Command("docker", full...)
 	cmd.Env = dispComposeEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run() == nil
+}
+
+// dispStackFromFile → the stack name from a compose file path (basename, no ext).
+func dispStackFromFile(file string) string {
+	b := filepath.Base(file)
+	b = strings.TrimSuffix(b, ".yml")
+	b = strings.TrimSuffix(b, ".yaml")
+	return b
+}
+
+// dispBarActionSvc derives a human action label + the target service (if any)
+// from compose args, for the loading bar's top + action lines.
+func dispBarActionSvc(args []string) (action, svc string) {
+	verb := ""
+	if len(args) > 0 {
+		verb = args[0]
+	}
+	skipNext := false
+	for i, t := range args {
+		if i == 0 {
+			continue
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if strings.HasPrefix(t, "-") {
+			if t == "--timeout" || t == "-t" {
+				skipNext = true
+			}
+			continue
+		}
+		if _, err := strconv.Atoi(t); err == nil {
+			continue // a bare numeric (e.g. timeout value)
+		}
+		svc = t // last non-flag token wins
+	}
+	labels := map[string]string{
+		"stop": "Stopping…", "start": "Starting…", "restart": "Restarting…",
+		"down": "Bringing down…", "rm": "Removing…", "kill": "Killing…",
+		"pull": "Pulling images…", "up": "Creating containers…", "reload": "Reloading…",
+	}
+	if l, ok := labels[verb]; ok {
+		return l, svc
+	}
+	return strings.Title(verb) + "…", svc
 }
 
 // ── STACKS LOADING BAR (faithful port of the bash reinit_ui/update_ui/clear_ui)
@@ -319,11 +385,43 @@ var (
 	luiActive  bool
 	luiStack   string
 	luiSvc     string
+	luiCurSvc  string // live service/container parsed from the latest docker line
 	luiAction  string
 	luiPercent int
 	luiStart   time.Time
 	luiLog     luiCapture
 )
+
+var luiAnsiRe = regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]")
+
+// luiSvcFromLine extracts the service/container name docker is currently acting
+// on from a compose progress line, so the bar's top line can show the live
+// service even during a whole-stack op (e.g. "Container net_2-foo-1 Started" → foo-1).
+func luiSvcFromLine(s string) string {
+	s = luiAnsiRe.ReplaceAllString(s, "")
+	f := strings.Fields(s)
+	for i, t := range f {
+		switch t {
+		case "Network", "Volume": // infra lines — not a service
+			return ""
+		case "Container":
+			if i+1 < len(f) {
+				return f[i+1]
+			}
+		}
+	}
+	// pull lines: "<service|ref> Pulling/Pulled/Extracting/Downloading/…"
+	if len(f) >= 2 {
+		switch f[len(f)-1] {
+		case "Pulling", "Pulled", "Waiting", "Extracting", "Downloading",
+			"Verifying", "Complete", "Downloaded":
+			if t := f[0]; t != "" && t != "✔" && t != "-" {
+				return t
+			}
+		}
+	}
+	return ""
+}
 
 // luiCapture is a thread-safe io.Writer: docker writes to it concurrently while
 // the ticker reads Last() for the live action line — so no data race.
@@ -353,6 +451,7 @@ var luiSpin = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "
 func luiInit(stack, svc string) {
 	luiActive = true
 	luiStack, luiSvc = stack, svc
+	luiCurSvc = ""
 	luiStart = time.Now()
 	luiLog.Reset()
 	fmt.Print("\n\n\n\n\x1b[3A") // reserve 4 lines, park cursor at the top
@@ -376,7 +475,18 @@ func luiUpdate(action string, percent int) {
 	}
 	spin := luiSpin[int(time.Since(luiStart).Seconds())%10]
 	bar := strings.Repeat("#", filled) + ">" + strings.Repeat("-", empty)
-	target := vtrunc(fmt.Sprintf("📦 %s | ⚙️  %s", luiStack, vtrunc(luiSvc, 35)), 78)
+	// Top line: 📦 stack | ⚙️ service. Prefer the explicit service; otherwise show
+	// the live service docker is currently working on (whole-stack ops).
+	svc := luiSvc
+	if svc == "" {
+		svc = luiCurSvc
+	}
+	var target string
+	if svc != "" {
+		target = vtrunc(fmt.Sprintf("📦 %s | ⚙️  %s", luiStack, vtrunc(svc, 35)), 78)
+	} else {
+		target = vtrunc(fmt.Sprintf("📦 %s", luiStack), 78)
+	}
 	actStr := vtrunc(fmt.Sprintf("  %s %s", spin, action), 78)
 	barStr := vtrunc(fmt.Sprintf("  [%s] %d%%", bar, percent), 78)
 	fmt.Printf("\x1b[?7l\r\x1b[K\x1b[38;5;81m%s\x1b[0m\n\r\x1b[K\x1b[38;5;75m%s\x1b[0m\n\r\x1b[K\x1b[38;5;39m%s\x1b[0m\n\r\x1b[K\x1b[38;5;245m  🛑 Press Ctrl+C to cancel.\x1b[0m\x1b[?7h\x1b[3A",
@@ -417,6 +527,11 @@ func dispComposeQ(file string, args ...string) bool {
 			act := luiLog.Last() // live: the latest docker line (Container X Started…)
 			if act == "" {
 				act = luiAction
+			}
+			if luiSvc == "" { // whole-stack op: surface the live service in the top line
+				if s := luiSvcFromLine(act); s != "" {
+					luiCurSvc = s
+				}
 			}
 			luiUpdate(act, luiPercent)
 		}
@@ -477,10 +592,13 @@ func dispShowTail(header, s string, n int) {
 // already-active loading bar — it does NOT init or clear the bar, so the single
 // continuous bar stays in one spot through up → repair → done (no drift). The
 // caller resets luiLog first so the returned string is just the repair log.
-func dispCapturedFix(stack string, repair bool) string {
+func dispCapturedFix(stack string, repair, force bool) string {
 	label, args := "Fixing", []string{"fix", stack}
 	if repair {
 		label, args = "Repairing", []string{"fix", stack, "repair"}
+	}
+	if force {
+		label, args = label+" (force)", append(args, "force")
 	}
 	luiUpdate(label+"…", 80)
 	cmd := exec.Command(selfExe(), args...)
@@ -604,7 +722,7 @@ func dispUp(a dispArgs) {
 		var repairLog string
 		if a.doFix || a.doRepair {
 			luiLog.Reset()
-			repairLog = dispCapturedFix(stack, a.doRepair)
+			repairLog = dispCapturedFix(stack, a.doRepair, a.force)
 		}
 		luiUpdate("Restarting Sablier…", 95)
 		dispSablierRestart() // quiet — no stdout, bar stays put
@@ -1504,9 +1622,13 @@ func dispArt(a dispArgs) {
 		}
 		dynDir := dispDynamicsDir()
 		files := dispArtTargetFiles(target, dynDir)
-		for _, f := range files {
+		luiInit("art dynamic "+sub, "")
+		for i, f := range files {
+			luiSvc = filepath.Base(f)
+			luiUpdate(strings.Title(sub)+"ing dynamics…", (i+1)*100/maxInt(len(files), 1))
 			dispInjectDynamicFile(sub, f, dynDir)
 		}
+		luiClear()
 		fmt.Printf("\x1b[1;32m✨ SUCCESS: Art %s on %d dynamic file(s)\x1b[0m\n", sub, len(files))
 		return
 	}
@@ -1535,15 +1657,19 @@ func dispArt(a dispArgs) {
 		fmt.Println("\x1b[1;33m⚠ No matching stacks discovered to process.\x1b[0m")
 		return
 	}
-	for _, f := range files {
-		fname := filepath.Base(f)
+	verb := "Injecting"
+	if action == "strip" {
+		verb = "Stripping"
+	}
+	luiInit("art "+action, "")
+	for i, f := range files {
+		luiSvc = filepath.Base(f)
+		luiUpdate(verb+"…", (i+1)*100/maxInt(len(files), 1))
 		if action == "strip" {
-			fmt.Printf("  🧹 Stripped clean ➜ %s\n", fname)
 			dispInjectFile("strip", f, mode)
 			dispDescribeFile("strip", f)
 			dispCollapseBlankLines(f)
 		} else {
-			fmt.Printf("  🎨 Injected ➜ %s\n", fname)
 			if mode == "all" || mode == "art" {
 				dispInjectFile("inject", f, mode)
 			}
@@ -1555,6 +1681,7 @@ func dispArt(a dispArgs) {
 			}
 		}
 	}
+	luiClear()
 	fmt.Println("\x1b[1;32m✨ SUCCESS: Stacks art engine updated all targets! ✨\x1b[0m")
 }
 
@@ -1919,15 +2046,22 @@ func dispBackup(a dispArgs) {
 		fmt.Printf("\x1b[1;33m⚠ Nothing to back up. Check %s\x1b[0m\n", confPath)
 		return
 	}
+	luiInit("backup", "")
 	for i, it := range items {
-		fmt.Printf("  \x1b[1;32m✔\x1b[0m %s (%d/%d)\n", filepath.Base(it), i+1, len(items))
+		luiSvc = filepath.Base(it)
+		luiUpdate(fmt.Sprintf("Archiving (%d/%d)…", i+1, len(items)), (i+1)*100/len(items))
 		dispBackupItem(it, dest)
 	}
 	if autoPrune && keep > 0 {
+		luiSvc = ""
+		luiUpdate("Pruning old backups…", 100)
 		pruned := dispBackupPrune(dest, keep)
+		luiClear()
 		if pruned > 0 {
 			fmt.Printf("  \x1b[1;33m↻ pruned %d old backup(s), keeping newest %d of each\x1b[0m\n", pruned, keep)
 		}
+	} else {
+		luiClear()
 	}
 	fmt.Printf("\x1b[1;32m✔ Backup complete — %d items archived.\x1b[0m\n", len(items))
 }

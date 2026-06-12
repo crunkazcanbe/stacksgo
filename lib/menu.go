@@ -898,6 +898,10 @@ var tuiContainerActions = []tuiAction{
 	{"◓  Repair + Recreate + Up", "repair_recreate"},
 	{"★  Fix + Repair + Recreate + Up", "full_repair"},
 	{"◉  Repair + Fix + Recreate + Up", "deep_repair"},
+	{"⚡  Fix (FORCE)", "fix_force"},
+	{"⚡  Repair (FORCE)", "repair_force"},
+	{"⚡  Fix + Repair + Recreate + Up (FORCE)", "full_repair_force"},
+	{"⚡  Repair + Fix + Recreate + Up (FORCE)", "deep_repair_force"},
 	{"↑  Scale ON", "scale_on"},
 	{"↓  Scale OFF", "scale_off"},
 	{"↑  Proxy ON", "proxy_on"},
@@ -1081,6 +1085,18 @@ func (m menuModel) doContainerAction(name, stackFile, action string) (menuModel,
 	case "fix_recreate", "repair_recreate", "full_repair", "deep_repair":
 		if stackName != "" {
 			return m, tuiSelfCmd("Heal "+stackName, "up", stackName, name, "repair", "fix")
+		}
+	case "fix_force":
+		if stackName != "" {
+			return m, tuiSelfCmd("Fix (force) "+stackName, "fix", stackName, "force")
+		}
+	case "repair_force":
+		if stackName != "" {
+			return m, tuiSelfCmd("Repair (force) "+stackName, "fix", stackName, "repair", "force")
+		}
+	case "full_repair_force", "deep_repair_force":
+		if stackName != "" {
+			return m, tuiSelfCmd("Heal (force) "+stackName, "up", stackName, name, "recreate", "repair", "fix", "force")
 		}
 	case "scale_on":
 		if stackName != "" {
@@ -1330,6 +1346,9 @@ var tuiStackActions = []tuiAction{
 	{"◈  Repair + Recreate", "recreate_repair"},
 	{"★  Fix + Repair + Recreate + Up", "full_repair"},
 	{"◉  Repair + Fix + Recreate + Up", "deep_repair"},
+	{"⚡  Fix (FORCE)", "fix_force"},
+	{"⚡  Repair (FORCE)", "repair_force"},
+	{"⚡  Fix + Repair + Recreate + Up (FORCE)", "full_repair_force"},
 	{"↑  Scale ON", "scale_on"},
 	{"↓  Scale OFF", "scale_off"},
 	{"↑  Proxy ON", "proxy_on"},
@@ -1356,6 +1375,7 @@ var tuiGlobalActions = []tuiAction{
 	{"◈  Repair + Recreate + Up — ALL", "repair_recreate_up_all"},
 	{"★  Fix + Repair + Recreate + Up — ALL", "full_repair_all"},
 	{"◉  Repair + Fix + Recreate + Up — ALL", "deep_repair_all"},
+	{"⚡  Fix + Repair + Recreate + Up — ALL (FORCE)", "full_repair_force_all"},
 	{"↑  Scale ON — all", "scale_on_all"},
 	{"↓  Scale OFF — all", "scale_off_all"},
 	{"↑  Proxy ON — all", "proxy_on_all"},
@@ -1409,6 +1429,12 @@ func (m menuModel) doStackAction(name, action string) (menuModel, tea.Cmd) {
 		return m, tuiSelfCmd("Fix+Repair+Up "+name, "up", name, "repair", "fix")
 	case "deep_repair":
 		return m, tuiSelfCmd("Repair+Fix+Up "+name, "up", name, "repair", "fix")
+	case "fix_force":
+		return m, tuiSelfCmd("Fix (force) "+name, "fix", name, "force")
+	case "repair_force":
+		return m, tuiSelfCmd("Repair (force) "+name, "fix", name, "repair", "force")
+	case "full_repair_force":
+		return m, tuiSelfCmd("Heal (force) "+name, "up", name, "recreate", "repair", "fix", "force")
 	case "scale_on":
 		return m, tuiSelfCmd("Scale ON "+name, "scale", name, "on")
 	case "scale_off":
@@ -1472,6 +1498,8 @@ func (m menuModel) doGlobalAction(action string) (menuModel, tea.Cmd) {
 		return m, tuiSelfCmd("Repair ALL", "fix", "all", "repair")
 	case "full_repair_all":
 		return m, tuiSelfCmd("Fix+Repair+Up ALL", "up", "repair", "fix")
+	case "full_repair_force_all":
+		return m, tuiSelfCmd("Fix+Repair+Recreate+Up ALL (force)", "up", "repair", "fix", "recreate", "force")
 	case "scale_on_all":
 		return m, tuiSelfCmd("Scale ON all", "scale", "on")
 	case "scale_off_all":
