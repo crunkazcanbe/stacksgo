@@ -501,6 +501,35 @@ func luiClear() {
 	luiActive = false
 }
 
+// luiQuiet runs fn with os.Stdout/os.Stderr redirected into luiLog, so in-process
+// engines (inject / describe) that print their own progress don't scroll the
+// screen and push the loading bar down. Their output is captured (shown only with
+// `info`) while the bar keeps redrawing in place. Always call luiUpdate OUTSIDE
+// this (the bar must draw to the real terminal).
+func luiQuiet(fn func()) {
+	if !luiActive {
+		fn()
+		return
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		fn()
+		return
+	}
+	os.Stdout, os.Stderr = w, w
+	done := make(chan struct{})
+	go func() { io.Copy(&luiLog, r); close(done) }()
+	func() {
+		defer func() { recover() }() // never let a panic leave stdout redirected
+		fn()
+	}()
+	w.Close()
+	<-done
+	r.Close()
+	os.Stdout, os.Stderr = oldOut, oldErr
+}
+
 // dispComposeQ runs docker compose with output captured to luiLog (no raw spam),
 // redrawing the bar every ~150ms so the spinner stays alive during long pulls.
 func dispComposeQ(file string, args ...string) bool {
@@ -1626,7 +1655,8 @@ func dispArt(a dispArgs) {
 		for i, f := range files {
 			luiSvc = filepath.Base(f)
 			luiUpdate(strings.Title(sub)+"ing dynamics…", (i+1)*100/maxInt(len(files), 1))
-			dispInjectDynamicFile(sub, f, dynDir)
+			f := f
+			luiQuiet(func() { dispInjectDynamicFile(sub, f, dynDir) })
 		}
 		luiClear()
 		fmt.Printf("\x1b[1;32m✨ SUCCESS: Art %s on %d dynamic file(s)\x1b[0m\n", sub, len(files))
@@ -1665,21 +1695,24 @@ func dispArt(a dispArgs) {
 	for i, f := range files {
 		luiSvc = filepath.Base(f)
 		luiUpdate(verb+"…", (i+1)*100/maxInt(len(files), 1))
-		if action == "strip" {
-			dispInjectFile("strip", f, mode)
-			dispDescribeFile("strip", f)
-			dispCollapseBlankLines(f)
-		} else {
-			if mode == "all" || mode == "art" {
-				dispInjectFile("inject", f, mode)
+		f := f
+		luiQuiet(func() {
+			if action == "strip" {
+				dispInjectFile("strip", f, mode)
+				dispDescribeFile("strip", f)
+				dispCollapseBlankLines(f)
+			} else {
+				if mode == "all" || mode == "art" {
+					dispInjectFile("inject", f, mode)
+				}
+				if mode == "all" || mode == "urls" {
+					dispInjectFile("inject_urls", f, "")
+				}
+				if mode == "all" || mode == "desc" {
+					dispDescribeFile("", f)
+				}
 			}
-			if mode == "all" || mode == "urls" {
-				dispInjectFile("inject_urls", f, "")
-			}
-			if mode == "all" || mode == "desc" {
-				dispDescribeFile("", f)
-			}
-		}
+		})
 	}
 	luiClear()
 	fmt.Println("\x1b[1;32m✨ SUCCESS: Stacks art engine updated all targets! ✨\x1b[0m")
