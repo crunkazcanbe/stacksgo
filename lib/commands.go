@@ -1638,36 +1638,21 @@ func dispArt(a dispArgs) {
 	}
 	action := a.raw[0]
 
-	// stacks art dynamic inject|strip [all|file]
-	if action == "dynamic" {
-		sub := ""
-		target := "all"
+	// Optional scope keyword: `art dynamic inject…` (dynamics ONLY) or
+	// `art compose inject…` (compose ONLY). Without it, inject/strip hit BOTH.
+	scope := "both"
+	if action == "dynamic" || action == "compose" {
+		scope = action
 		if len(a.raw) > 1 {
-			sub = a.raw[1]
+			a.raw = a.raw[1:] // shift: next token is the real action (inject|strip)
+			action = a.raw[0]
+		} else {
+			action = ""
 		}
-		if len(a.raw) > 2 {
-			target = a.raw[2]
-		}
-		if sub != "inject" && sub != "strip" {
-			fmt.Println("\x1b[1;31m✘ Usage: stacks art dynamic inject|strip [all|filename]\x1b[0m")
-			os.Exit(1)
-		}
-		dynDir := dispDynamicsDir()
-		files := dispArtTargetFiles(target, dynDir)
-		luiInit("art dynamic "+sub, "")
-		for i, f := range files {
-			luiSvc = filepath.Base(f)
-			luiUpdate(strings.Title(sub)+"ing dynamics…", (i+1)*100/maxInt(len(files), 1))
-			f := f
-			luiQuiet(func() { dispInjectDynamicFile(sub, f, dynDir) })
-		}
-		luiClear()
-		fmt.Printf("\x1b[1;32m✨ SUCCESS: Art %s on %d dynamic file(s)\x1b[0m\n", sub, len(files))
-		return
 	}
 
 	if action != "inject" && action != "strip" && action != "backup" {
-		fmt.Println("\x1b[1;31m✘ Error: Specify 'inject' or 'strip' (e.g., stacks art inject)\x1b[0m")
+		fmt.Println("\x1b[1;31m✘ Usage: stacks art [compose|dynamic] inject|strip [all|art|urls|desc] [name]\x1b[0m")
 		os.Exit(1)
 	}
 
@@ -1684,20 +1669,42 @@ func dispArt(a dispArgs) {
 			target = a.raw[1]
 		}
 	}
-	dir := stacksDir()
-	files := dispArtTargetFiles(target, dir)
-	if len(files) == 0 {
-		fmt.Println("\x1b[1;33m⚠ No matching stacks discovered to process.\x1b[0m")
+
+	// Gather targets across BOTH the compose dir and the dynamics dir (honouring
+	// the optional scope). A bare name auto-resolves in whichever dir(s) it exists.
+	var composeFiles, dynFiles []string
+	stacksDir, dynDir := stacksDir(), dispDynamicsDir()
+	all := target == "--all" || target == "all"
+	if scope == "both" || scope == "compose" {
+		if all {
+			composeFiles = dispArtTargetFiles("--all", stacksDir)
+		} else {
+			composeFiles = dispArtResolve(target, stacksDir)
+		}
+	}
+	if scope == "both" || scope == "dynamic" {
+		if all {
+			dynFiles = dispArtTargetFiles("--all", dynDir)
+		} else {
+			dynFiles = dispArtResolve(target, dynDir)
+		}
+	}
+	if len(composeFiles) == 0 && len(dynFiles) == 0 {
+		fmt.Printf("\x1b[1;33m⚠ No matching compose or dynamic files found for: %s\x1b[0m\n", target)
 		return
 	}
+
 	verb := "Injecting"
 	if action == "strip" {
 		verb = "Stripping"
 	}
+	total := len(composeFiles) + len(dynFiles)
+	done := 0
 	luiInit("art "+action, "")
-	for i, f := range files {
+	for _, f := range composeFiles {
+		done++
 		luiSvc = filepath.Base(f)
-		luiUpdate(verb+"…", (i+1)*100/maxInt(len(files), 1))
+		luiUpdate(verb+" compose…", done*100/maxInt(total, 1))
 		f := f
 		luiQuiet(func() {
 			if action == "strip" {
@@ -1717,8 +1724,33 @@ func dispArt(a dispArgs) {
 			}
 		})
 	}
+	for _, f := range dynFiles {
+		done++
+		luiSvc = filepath.Base(f)
+		luiUpdate(verb+" dynamics…", done*100/maxInt(total, 1))
+		f := f
+		luiQuiet(func() { dispInjectDynamicFile(action, f, dynDir) })
+	}
 	luiClear()
-	fmt.Println("\x1b[1;32m✨ SUCCESS: Stacks art engine updated all targets! ✨\x1b[0m")
+	fmt.Printf("\x1b[1;32m✨ SUCCESS: Art %s — %d compose + %d dynamic file(s) ✨\x1b[0m\n",
+		action, len(composeFiles), len(dynFiles))
+}
+
+// dispArtResolve resolves a bare target name within dir WITHOUT aborting if it's
+// absent (so the same name can be looked up in both the compose and dynamics
+// dirs). Returns nil when nothing matches.
+func dispArtResolve(target, dir string) []string {
+	for _, c := range []string{
+		target,
+		filepath.Join(dir, target),
+		filepath.Join(dir, target+".yml"),
+		filepath.Join(dir, target+".yaml"),
+	} {
+		if dispFileExists(c) {
+			return []string{c}
+		}
+	}
+	return nil
 }
 
 // dispArtTargetFiles resolves an art/dynamic target: "all"/"--all" → every
