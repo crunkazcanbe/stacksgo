@@ -2231,6 +2231,7 @@ type zsSite struct {
 	StopTimeout string   `yaml:"stop_timeout,omitempty"`
 	AlwaysOn    bool     `yaml:"always_on,omitempty"`
 	Enabled     *bool    `yaml:"enabled,omitempty"`
+	Stack string `yaml:"stack,omitempty"` // which compose stack this container belongs to (auto-filled)
 	// per-site Sablier-parity overrides (blank = use the global config default)
 	Group               string `yaml:"group,omitempty"`
 	Mode                string `yaml:"mode,omitempty"`    // dynamic | blocking

@@ -231,6 +231,60 @@ func zeroScaleAvailable() bool {
 	return true
 }
 
+// zsHostForContainer best-effort extracts the Traefik Host(`…`) from a
+// container's labels, so auto-generated sites get their URL filled in.
+func zsHostForContainer(name string) string {
+	out, _ := exec.Command("docker", "inspect", "-f",
+		"{{range .Config.Labels}}{{println .}}{{end}}", name).Output()
+	for _, v := range strings.Split(string(out), "\n") {
+		if i := strings.Index(v, "Host(`"); i >= 0 {
+			rest := v[i+6:]
+			if j := strings.Index(rest, "`"); j >= 0 {
+				return rest[:j]
+			}
+		}
+	}
+	return ""
+}
+
+// zeroScaleGenerate auto-fills zeroscale.yaml with EVERY container, grouped by
+// its compose stack (standalone containers get a single-container entry). It is
+// idempotent: existing entries keep their enabled flag and per-site overrides —
+// only the stack label + newly-seen containers are added. New entries default to
+// DISABLED so nothing changes behaviour until you flip it on (menu or config).
+func zeroScaleGenerate() {
+	c := loadZSConfig()
+	out, _ := exec.Command("docker", "ps", "-a", "--format",
+		"{{.Names}}\t{{.Label \"com.docker.compose.project\"}}").Output()
+	added, kept := 0, 0
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name, stack, _ := strings.Cut(ln, "\t")
+		name = strings.TrimSpace(name)
+		stack = strings.TrimSpace(stack)
+		if name == "" {
+			continue
+		}
+		if _, s := c.siteForContainer(name); s != nil {
+			s.Stack = stack // refresh the stack label, keep everything else
+			kept++
+			continue
+		}
+		off := false
+		site := &zsSite{Stack: stack, Containers: []string{name}, Enabled: &off}
+		if h := zsHostForContainer(name); h != "" {
+			site.Host = []string{h}
+		}
+		c.Sites[name] = site
+		added++
+	}
+	if err := saveZSConfig(c); err != nil {
+		fmt.Println("✘ save:", err)
+		return
+	}
+	fmt.Printf("\x1b[1;32m✔ zeroscale.yaml generated\x1b[0m  +%d new, %d kept  (new entries default OFF)\n", added, kept)
+	fmt.Printf("  total containers tracked: %d — enable per-container in the menu or by editing the file\n", len(c.Sites))
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
 func cmdZeroScale(args []string) {
@@ -249,8 +303,10 @@ func cmdZeroScale(args []string) {
 		zeroScaleUninstall()
 	case "screens":
 		fmt.Println("loading screens:", strings.Join(zsScreens, " "))
+	case "generate", "gen", "fill", "sync":
+		zeroScaleGenerate()
 	default:
-		fmt.Println("usage: stacks zeroscale [status|run|install|uninstall|screens]")
+		fmt.Println("usage: stacks zeroscale [status|run|generate|install|uninstall|screens]")
 	}
 }
 
