@@ -473,21 +473,21 @@ func dispShowTail(header, s string, n int) {
 	fmt.Printf("%s╰%s╯%s\n", c, strings.Repeat("─", w-2), x)
 }
 
-// dispCapturedFix runs the fix (or repair) engine for one stack behind the
-// loading bar, capturing its output so `info` can show it as a separate log.
+// dispCapturedFix runs the fix (or repair) engine for one stack INLINE behind the
+// already-active loading bar — it does NOT init or clear the bar, so the single
+// continuous bar stays in one spot through up → repair → done (no drift). The
+// caller resets luiLog first so the returned string is just the repair log.
 func dispCapturedFix(stack string, repair bool) string {
 	label, args := "Fixing", []string{"fix", stack}
 	if repair {
 		label, args = "Repairing", []string{"fix", stack, "repair"}
 	}
-	luiInit(stack, "")
-	luiUpdate(label+"…", 40)
+	luiUpdate(label+"…", 80)
 	cmd := exec.Command(selfExe(), args...)
 	cmd.Env = dockerEnv()
 	cmd.Stdout = &luiLog
 	cmd.Stderr = &luiLog
 	if cmd.Start() != nil {
-		luiClear()
 		return ""
 	}
 	done := make(chan error, 1)
@@ -503,12 +503,10 @@ func dispCapturedFix(stack string, repair bool) string {
 			if act == "" {
 				act = label + "…"
 			}
-			luiUpdate(act, 70)
+			luiUpdate(act, 88)
 		}
 	}
-	out := luiLog.String()
-	luiClear()
-	return out
+	return luiLog.String()
 }
 
 // dispComposeOut runs a compose command and captures stdout (trimmed).
@@ -600,18 +598,18 @@ func dispUp(a dispArgs) {
 			args := append([]string{"up", "-d"}, extra...)
 			dispComposeQ(file, args...)
 		}
-		luiUpdate("Restarting Sablier…", 95)
-		luiUpdate("Done", 100)
-		upLog := luiLog.String() // captured for the `info` flag (incl. recreate)
-		luiClear()               // clear the bar BEFORE anything else prints (no garble)
-		dispSablierRestart()
-		fmt.Printf("\x1b[1;32m✔ %s%s up\x1b[0m\n", stack, dispSvcLabel(service))
-		// `up … fix`/`repair` — run after deploy; capture each so `info` can show
-		// them as SEPARATE logs (repair / up / recreate), like the Python version.
+		upLog := luiLog.String() // snapshot the up/recreate log for the `info` flag
+		// `up … fix`/`repair` — run INLINE on the SAME bar (no second bar, no drift),
+		// capturing into a fresh buffer so the repair log stays separate (Python-style).
 		var repairLog string
 		if a.doFix || a.doRepair {
+			luiLog.Reset()
 			repairLog = dispCapturedFix(stack, a.doRepair)
 		}
+		luiUpdate("Restarting Sablier…", 95)
+		dispSablierRestart() // quiet — no stdout, bar stays put
+		luiUpdate("Done", 100)
+		luiClear() // ONE clear at the very end — the bar never moves
 		if a.info {
 			if repairLog != "" {
 				dispShowTail("repair "+stack, repairLog, 20)
