@@ -615,16 +615,56 @@ func tuiCenter(s string, width int) string {
 	return strings.Repeat(" ", pad) + s + strings.Repeat(" ", width-len(s)-pad)
 }
 
-// tuiRenderTabs draws the scrolling tab bar with the active tab highlighted.
+// tuiRenderTabs draws the tab bar WINDOWED to the terminal width so the active
+// tab is always on-screen (the full 12-tab row overflowed narrow handheld
+// screens and the selected tab scrolled off). Shows ‹ / › when tabs are hidden.
 func tuiRenderTabs(active, width int) string {
-	var parts []string
+	n := len(tuiTabs)
+	if width <= 0 {
+		width = 80
+	}
+	labels := make([]string, n)
+	lw := make([]int, n)
 	for i, t := range tuiTabs {
-		label := " " + t + " "
-		if i == active {
-			parts = append(parts, tuiTabActive.Render(label))
-		} else {
-			parts = append(parts, tuiTabInactive.Render(label))
+		labels[i] = " " + t + " "
+		lw[i] = len(labels[i])
+	}
+	// Reserve room for the leading space + both ‹ › arrows + separators (~7).
+	budget := width - 7
+	if budget < lw[active] {
+		budget = lw[active]
+	}
+	lo, hi := active, active
+	used := lw[active]
+	for {
+		grew := false
+		if hi+1 < n && used+1+lw[hi+1] <= budget {
+			used += 1 + lw[hi+1]
+			hi++
+			grew = true
 		}
+		if lo-1 >= 0 && used+1+lw[lo-1] <= budget {
+			used += 1 + lw[lo-1]
+			lo--
+			grew = true
+		}
+		if !grew {
+			break
+		}
+	}
+	var parts []string
+	if lo > 0 {
+		parts = append(parts, tuiDimStyle.Render("‹"))
+	}
+	for i := lo; i <= hi; i++ {
+		if i == active {
+			parts = append(parts, tuiTabActive.Render(labels[i]))
+		} else {
+			parts = append(parts, tuiTabInactive.Render(labels[i]))
+		}
+	}
+	if hi < n-1 {
+		parts = append(parts, tuiDimStyle.Render("›"))
 	}
 	return " " + strings.Join(parts, " ")
 }
