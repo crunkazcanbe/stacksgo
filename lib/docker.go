@@ -1324,6 +1324,12 @@ var scalarMap = map[string]string{
 	"zero_scale_retry_after":   "ZERO_SCALE_RETRY_AFTER",   // seconds for the loading page's auto-retry/refresh
 	"zero_scale_fail_open":            "ZERO_SCALE_FAIL_OPEN",            // if the engine errors, let traffic through instead of blocking (Sablier failOpen)
 	"zero_scale_auto_stop_on_startup": "ZERO_SCALE_AUTO_STOP_ON_STARTUP", // on engine startup, stop managed sites so they begin asleep (Sablier)
+	// Zero Scale — loading-screen / theme options
+	"zero_scale_themes_dir":  "ZERO_SCALE_THEMES_DIR",  // folder holding the theme .html files (the "dictionary" for screens)
+	"zero_scale_custom_html": "ZERO_SCALE_CUSTOM_HTML", // path to ONE custom .html file — overrides the theme/screen if set
+	"zero_scale_title":       "ZERO_SCALE_TITLE",       // heading prefix on the loading screen (default "Waking")
+	"zero_scale_tip":         "ZERO_SCALE_TIP",         // the tip/sub-text line on the loading screen
+	"zero_scale_use_themes":  "ZERO_SCALE_USE_THEMES",  // use the external theme .html files (off = built-in inline screen)
 }
 
 // LIST_MAP: friendly YAML list key -> (internal key, join char).

@@ -386,6 +386,7 @@ func zeroScaleEngine() {
 	mux.HandleFunc("/zs/health", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") })
 	mux.HandleFunc("/zs/wake", zsWakeStatusHandler) // JSON poll: is the site up yet?
 	mux.HandleFunc("/zs/logs", zsLogsHandler)       // SSE: live docker logs for the loading screen
+	mux.HandleFunc("/status", zsStatusHandler)      // {"ready":…} — what the bellzloader/Sablier themes poll
 	mux.HandleFunc("/", zsLandingHandler)           // the loading screen (Traefik errors route here)
 	srv := &http.Server{Addr: listen, Handler: mux, ReadTimeout: 15 * time.Second}
 	if err := srv.ListenAndServe(); err != nil {
@@ -461,7 +462,7 @@ func zsLandingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	fmt.Fprint(w, loadingScreenHTML(screen, display, key))
+	fmt.Fprint(w, loadingScreenHTML(screen, display, key, r.Host))
 }
 
 // zsWakeStatusHandler answers the loading screen's poll: {"up": true/false}.
@@ -497,6 +498,24 @@ func containerReady(name string, requireHealth bool) bool {
 		"{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", name).Output()
 	st := strings.TrimSpace(string(out))
 	return st == "healthy" || st == "none" || st == ""
+}
+
+// zsStatusHandler is what the bellzloader/Sablier theme HTML polls
+// (GET /status?host=…) — replies {"ready": true} once the site is up so the
+// screen reloads the user into the real app.
+func zsStatusHandler(w http.ResponseWriter, r *http.Request) {
+	_, s := siteForHost(r.URL.Query().Get("host"))
+	requireHealth := configLoad()["ZERO_SCALE_HEALTHCHECK"] != "0"
+	ready := s != nil && len(s.Containers) > 0
+	if s != nil {
+		for _, cn := range s.Containers {
+			if !containerReady(cn, requireHealth) {
+				ready = false
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ready": %v}`, ready)
 }
 
 // zsLogsHandler streams the site container's docker logs as SSE for the screen.
@@ -681,7 +700,34 @@ func zeroScaleUninstall() {
 // loadingScreenHTML renders a self-contained, themed wake screen. It polls
 // /zs/wake until the site is up (then reloads so Traefik routes to the now-awake
 // service) and live-streams the container's Docker logs via /zs/logs (SSE).
-func loadingScreenHTML(screen, display, siteKey string) string {
+func loadingScreenHTML(screen, display, siteKey, host string) string {
+	cfg := configLoad()
+	// First choice: serve the user's REAL theme .html files (identical to the old
+	// Node/bellzloader loader) — a custom file, or <themes_dir>/<screen>.html.
+	if cfg["ZERO_SCALE_USE_THEMES"] != "0" {
+		path := strings.TrimSpace(cfg["ZERO_SCALE_CUSTOM_HTML"])
+		if path == "" {
+			dir := cfgStrKey(cfg, "ZERO_SCALE_THEMES_DIR",
+				"/home/bellzserver/MyDocker/Configs/stackwake/screens")
+			path = dir + "/" + screen + ".html"
+		}
+		if data, err := os.ReadFile(path); err == nil {
+			html := string(data)
+			repl := map[string]string{
+				"{{DISPLAY}}":   display,
+				"{{HOST}}":      host,
+				"{{SESSION}}":   siteKey,
+				"{{WAKE_BASE}}": cfgStrKey(cfg, "ZERO_SCALE_WAKE_BASE", ""),
+				"{{TITLE}}":     cfgStrKey(cfg, "ZERO_SCALE_TITLE", "Waking"),
+				"{{TIP}}":       cfg["ZERO_SCALE_TIP"],
+			}
+			for k, v := range repl {
+				html = strings.ReplaceAll(html, k, v)
+			}
+			return html
+		}
+	}
+	// Fallback: the built-in inline screen.
 	themes := map[string][2]string{
 		// name -> [background css, accent color]
 		"minecraft": {"background:#2a1a0e;background-image:repeating-linear-gradient(45deg,#33200f 0 8px,#2a1a0e 8px 16px);", "#5fb83c"},
