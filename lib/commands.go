@@ -1952,25 +1952,39 @@ func dispTakeSnapshot(label string) string {
 	os.MkdirAll(filepath.Join(snap, "stacks"), 0755)
 	os.MkdirAll(filepath.Join(snap, "dynamics"), 0755)
 	os.MkdirAll(filepath.Join(snap, "traefik"), 0755)
-	fmt.Printf("📸 Taking snapshot: %s\n", snap)
-	// stack files
-	for _, f := range dispStackFiles() {
-		dispCopyFile(f, filepath.Join(snap, "stacks", filepath.Base(f)))
-	}
-	// dynamics
+
+	stackFiles := dispStackFiles()
+	var dynList []string
 	if entries, err := os.ReadDir(dispDynamicsDir()); err == nil {
 		for _, e := range entries {
 			if strings.HasSuffix(e.Name(), ".yml") {
-				dispCopyFile(filepath.Join(dispDynamicsDir(), e.Name()), filepath.Join(snap, "dynamics", e.Name()))
+				dynList = append(dynList, e.Name())
 			}
 		}
 	}
+	total := len(stackFiles) + len(dynList)
+	done := 0
+	luiInit("snapshot", filepath.Base(snap))
+	for _, f := range stackFiles {
+		done++
+		luiSvc = filepath.Base(f)
+		luiUpdate("Copying stacks…", done*100/maxInt(total, 1))
+		dispCopyFile(f, filepath.Join(snap, "stacks", filepath.Base(f)))
+	}
+	for _, e := range dynList {
+		done++
+		luiSvc = e
+		luiUpdate("Copying dynamics…", done*100/maxInt(total, 1))
+		dispCopyFile(filepath.Join(dispDynamicsDir(), e), filepath.Join(snap, "dynamics", e))
+	}
+	luiClear()
 	if label == "golden" {
 		link := filepath.Join(dispSnapshotDir(), "golden_latest")
 		os.Remove(link)
 		os.Symlink(snap, link)
 	}
-	fmt.Printf("✔ Snapshot saved: %s\n", snap)
+	// short line — just the snapshot name, not the full path
+	fmt.Printf("\x1b[1;32m✔ Snapshot saved: %s\x1b[0m\n", filepath.Base(snap))
 	return snap
 }
 
