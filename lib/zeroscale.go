@@ -29,7 +29,16 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
+)
+
+// group cache — the env-scan over hundreds of containers is too slow to run on
+// every 2.5s poll, so cache each site's group for a short window.
+var (
+	zsGroupCache   = map[string][]string{}
+	zsGroupCacheAt = map[string]time.Time{}
+	zsGroupMu      sync.Mutex
 )
 
 // ── Traefik auto-detection (Docker API) ───────────────────────────────────────
@@ -391,6 +400,7 @@ func zeroScaleEngine() {
 	mux.HandleFunc("/zs/wake", zsWakeStatusHandler) // JSON poll: is the site up yet?
 	mux.HandleFunc("/zs/logs", zsLogsHandler)       // SSE: live docker logs for the loading screen
 	mux.HandleFunc("/status", zsStatusHandler)      // {"ready":…} — what the bellzloader/Sablier themes poll
+	mux.HandleFunc("/zs/group", zsGroupHandler)     // per-container readiness for the default screen's checklist
 	mux.HandleFunc("/", zsLandingHandler)           // the loading screen (Traefik errors route here)
 	srv := &http.Server{Addr: listen, Handler: mux, ReadTimeout: 15 * time.Second}
 	if err := srv.ListenAndServe(); err != nil {
@@ -743,7 +753,30 @@ func siteGroup(s *zsSite) []string {
 	if s == nil {
 		return nil
 	}
-	return zsAutoGroup(s.Containers)
+	key := strings.Join(s.Containers, ",")
+	zsGroupMu.Lock()
+	defer zsGroupMu.Unlock()
+	if g, ok := zsGroupCache[key]; ok && time.Since(zsGroupCacheAt[key]) < 60*time.Second {
+		return g
+	}
+	g := zsAutoGroup(s.Containers)
+	zsGroupCache[key] = g
+	zsGroupCacheAt[key] = time.Now()
+	return g
+}
+
+// zsGroupHandler returns each group container + whether it's ready, so the
+// loading screen can show a live checklist of what's coming up.
+func zsGroupHandler(w http.ResponseWriter, r *http.Request) {
+	c := loadZSConfig()
+	s := c.Sites[r.URL.Query().Get("site")]
+	requireHealth := configLoad()["ZERO_SCALE_HEALTHCHECK"] != "0"
+	w.Header().Set("Content-Type", "application/json")
+	parts := []string{}
+	for _, cn := range siteGroup(s) {
+		parts = append(parts, fmt.Sprintf(`{"name":%q,"ready":%v}`, cn, containerReady(cn, requireHealth)))
+	}
+	fmt.Fprintf(w, `{"containers":[%s]}`, strings.Join(parts, ","))
 }
 
 func siteReady(s *zsSite) bool {
@@ -896,51 +929,76 @@ func loadingScreenHTML(screen, display, siteKey, host string) string {
 			return html
 		}
 	}
-	// Fallback: the built-in inline screen.
-	themes := map[string][2]string{
-		// name -> [background css, accent color]
-		"minecraft": {"background:#2a1a0e;background-image:repeating-linear-gradient(45deg,#33200f 0 8px,#2a1a0e 8px 16px);", "#5fb83c"},
-		"terminal":  {"background:#0b0e0b;", "#3ad14b"},
-		"ghost":     {"background:#11131a;", "#8a7dff"},
-		"synthwave": {"background:linear-gradient(#1a0b2e,#0d0221);", "#ff4dd2"},
-		"pride":     {"background:linear-gradient(180deg,#e40303,#ff8c00,#ffed00,#008026,#004dff,#750787);", "#ffffff"},
+	// Built-in DEFAULT screen — self-contained, ships with the program, used for
+	// everyone when no custom theme file is applied. Shows the whole group as a
+	// live checklist (each container flips to ✓ as it comes up), an animated bar,
+	// and the live Docker logs. Uses only the engine's own endpoints.
+	accent := "#7c9cff"
+	switch screen {
+	case "minecraft":
+		accent = "#5fb83c"
+	case "terminal":
+		accent = "#3ad14b"
+	case "synthwave":
+		accent = "#ff4dd2"
 	}
-	t, ok := themes[screen]
-	if !ok {
-		t = themes["minecraft"]
-	}
-	bg, accent := t[0], t[1]
-	return fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8">
+	return fmt.Sprintf(`<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Waking %[1]s…</title>
 <style>
- html,body{height:100%%;margin:0;%[2]s color:#ece0cf;font-family:'JetBrains Mono',ui-monospace,monospace;}
- .wrap{height:100%%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px;box-sizing:border-box;}
- h1{font-size:2rem;margin:.2em;text-shadow:2px 2px #000;}
- .bar{width:min(520px,80vw);height:22px;border:2px solid %[3]s;background:rgba(0,0,0,.45);margin:14px 0;overflow:hidden;}
- .fill{height:100%%;width:30%%;background:%[3]s;animation:slide 1.2s infinite ease-in-out;}
- @keyframes slide{0%%{margin-left:-30%%}100%%{margin-left:100%%}}
- .sub{opacity:.8;margin:.3em}
- pre{width:min(640px,90vw);height:32vh;overflow:auto;text-align:left;background:rgba(0,0,0,.55);
-     border:1px solid %[3]s;padding:10px;font-size:.78rem;line-height:1.25;}
- .accent{color:%[3]s}
+ :root{--a:%[3]s}
+ *{box-sizing:border-box}
+ html,body{height:100%%;margin:0;background:radial-gradient(1200px 600px at 50%% -10%%,#1b2030,#0c0e16);
+   color:#e7ebf5;font-family:ui-monospace,'JetBrains Mono',Menlo,monospace}
+ .wrap{min-height:100%%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px}
+ h1{font-size:1.9rem;margin:0;font-weight:700}
+ h1 .a{color:var(--a)}
+ .sub{opacity:.7;font-size:.85rem;margin:-6px 0 2px}
+ .bar{width:min(560px,86vw);height:14px;border-radius:8px;background:#ffffff14;overflow:hidden;position:relative}
+ .bar i{position:absolute;top:0;bottom:0;width:40%%;border-radius:8px;background:var(--a);
+   filter:drop-shadow(0 0 8px var(--a));animation:sl 1.3s cubic-bezier(.4,0,.2,1) infinite}
+ @keyframes sl{0%%{left:-40%%}100%%{left:100%%}}
+ .grid{width:min(560px,86vw);display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+ .chip{display:flex;align-items:center;gap:7px;background:#ffffff0d;border:1px solid #ffffff14;
+   border-radius:999px;padding:5px 12px;font-size:.8rem}
+ .chip .d{width:9px;height:9px;border-radius:50%%;background:#ffd166;box-shadow:0 0 6px #ffd16688;animation:pz 1s infinite}
+ .chip.ok .d{background:var(--a);box-shadow:0 0 8px var(--a);animation:none}
+ .chip.ok{color:var(--a);border-color:var(--a)55}
+ @keyframes pz{50%%{opacity:.35}}
+ pre{width:min(640px,90vw);height:30vh;overflow:auto;margin:0;text-align:left;background:#00000055;
+   border:1px solid #ffffff14;border-radius:10px;padding:12px;font-size:.76rem;line-height:1.5;color:#aeb6c6}
+ pre .ok{color:var(--a)}pre .error{color:#ff7a7a}pre .warn{color:#ffd166}pre .status{color:#7fd3ff}
+ .tip{opacity:.55;font-size:.75rem}
 </style></head><body><div class="wrap">
- <h1>⛏ Waking <span class="accent">%[1]s</span>…</h1>
- <div class="bar"><div class="fill"></div></div>
- <div class="sub">starting the container — this only takes a moment</div>
+ <h1>Waking <span class="a">%[1]s</span>…</h1>
+ <div class="sub">starting the container group — this only takes a moment</div>
+ <div class="bar"><i></i></div>
+ <div class="grid" id="grid"></div>
  <pre id="log">connecting to logs…
 </pre>
+ <div class="tip">You'll be dropped in automatically once everything is ready.</div>
 </div>
 <script>
- const site=%[4]q;
- const log=document.getElementById('log');
+ const site=%[2]q, grid=document.getElementById('grid'), log=document.getElementById('log');
  try{const es=new EventSource('/zs/logs?site='+encodeURIComponent(site));
-   es.onmessage=e=>{log.textContent+=e.data+'\n';log.scrollTop=log.scrollHeight;};}catch(e){}
+   es.onmessage=e=>{const d=document.createElement('span');
+     const t=e.data.toLowerCase();
+     d.className=/error|fatal/.test(t)?'error':/warn/.test(t)?'warn':/listening|started|ready|running on/.test(t)?'ok':'';
+     d.textContent=e.data+'\n';log.appendChild(d);log.scrollTop=log.scrollHeight;
+     while(log.children.length>400)log.removeChild(log.firstChild);};}catch(e){}
+ async function group(){
+   try{const r=await fetch('/zs/group?site='+encodeURIComponent(site),{cache:'no-store'});
+     const j=await r.json();grid.innerHTML='';
+     (j.containers||[]).forEach(c=>{const el=document.createElement('div');
+       el.className='chip'+(c.ready?' ok':'');
+       el.innerHTML='<span class="d"></span>'+c.name+(c.ready?' ✓':'');grid.appendChild(el);});
+   }catch(e){}
+ }
  async function poll(){
    try{const r=await fetch('/zs/wake?site='+encodeURIComponent(site),{cache:'no-store'});
-     const j=await r.json(); if(j.up){location.reload();return;}}catch(e){}
+     if((await r.json()).up){location.reload();return;}}catch(e){}
    setTimeout(poll,2000);
  }
- setTimeout(poll,2500);
-</script></body></html>`, display, bg, accent, siteKey)
+ group();setInterval(group,2000);setTimeout(poll,2500);
+</script></body></html>`, display, siteKey, accent)
 }
