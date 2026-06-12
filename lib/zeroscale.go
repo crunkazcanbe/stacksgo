@@ -348,17 +348,34 @@ func zsWakeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("site")
 	c := loadZSConfig()
 	s := c.Sites[key]
+	requireHealth := configLoad()["ZERO_SCALE_HEALTHCHECK"] != "0"
 	up := false
 	if s != nil {
 		up = len(s.Containers) > 0
 		for _, cn := range s.Containers {
-			if !containerRunning(cn) {
+			if !containerReady(cn, requireHealth) {
 				up = false
 			}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"up": %v}`, up)
+}
+
+// containerReady = running AND (no Docker healthcheck OR healthy). When
+// ZERO_SCALE_HEALTHCHECK is on we wait for a real "healthy" before calling it up,
+// so the loading screen doesn't bounce the user to a half-started app.
+func containerReady(name string, requireHealth bool) bool {
+	if !containerRunning(name) {
+		return false
+	}
+	if !requireHealth {
+		return true
+	}
+	out, _ := exec.Command("docker", "inspect", "-f",
+		"{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", name).Output()
+	st := strings.TrimSpace(string(out))
+	return st == "healthy" || st == "none" || st == ""
 }
 
 // zsLogsHandler streams the site container's docker logs as SSE for the screen.

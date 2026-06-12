@@ -1303,6 +1303,25 @@ var scalarMap = map[string]string{
 	"zero_scale_show_logs":     "ZERO_SCALE_SHOW_LOGS",     // stream docker logs on the loading screen
 	"zero_scale_log_lines":     "ZERO_SCALE_LOG_LINES",     // how many log lines to tail on the screen
 	"zero_scale_autostop":      "ZERO_SCALE_AUTOSTOP",      // master switch for the idle-sleeper loop
+	// Zero Scale — full Sablier-middleware parity (+ extras) — global defaults
+	"zero_scale_mode":                 "ZERO_SCALE_MODE",                 // dynamic (loading page) | blocking (wait then proxy)
+	"zero_scale_refresh":              "ZERO_SCALE_REFRESH",              // loading-screen refresh, e.g. 5s (Sablier refreshFrequency)
+	"zero_scale_timeout":              "ZERO_SCALE_TIMEOUT",              // max wait for a service to come up, e.g. 10m (Sablier timeout)
+	"zero_scale_warmup":               "ZERO_SCALE_WARMUP",               // grace before health-checking, e.g. 10s (Sablier warmupPeriod)
+	"zero_scale_healthcheck":          "ZERO_SCALE_HEALTHCHECK",          // HTTP-probe the service before "up" (not just container running)
+	"zero_scale_healthcheck_path":     "ZERO_SCALE_HEALTHCHECK_PATH",     // path to probe, e.g. / (Sablier healthCheckPath)
+	"zero_scale_healthcheck_interval": "ZERO_SCALE_HEALTHCHECK_INTERVAL", // probe interval, e.g. 2s (Sablier healthCheckInterval)
+	"zero_scale_provider":             "ZERO_SCALE_PROVIDER",             // docker | swarm | kubernetes (Sablier provider)
+	"zero_scale_sablier_url":          "ZERO_SCALE_SABLIER_URL",          // (compat) proxy to a Sablier server if set (Sablier sablierUrl)
+	"zero_scale_replicas":             "ZERO_SCALE_REPLICAS",             // wake target replicas (Sablier scaling.replicas)
+	"zero_scale_min_replicas":         "ZERO_SCALE_MIN_REPLICAS",         // sleep target replicas, 0 (Sablier minReplicas)
+	"zero_scale_max_replicas":         "ZERO_SCALE_MAX_REPLICAS",         // replica ceiling (Sablier maxReplicas)
+	"zero_scale_blocking_timeout":     "ZERO_SCALE_BLOCKING_TIMEOUT",     // blocking-mode: wait this long, then proxy anyway
+	// extras Sablier doesn't have
+	"zero_scale_wake_depends":  "ZERO_SCALE_WAKE_DEPENDS",  // wake a site's dependencies (its DB etc.) first
+	"zero_scale_prewarm":       "ZERO_SCALE_PREWARM",       // pre-start sites at boot so the first visit is instant
+	"zero_scale_show_progress": "ZERO_SCALE_SHOW_PROGRESS", // show a real progress/percent bar on the loading screen
+	"zero_scale_retry_after":   "ZERO_SCALE_RETRY_AFTER",   // seconds for the loading page's auto-retry/refresh
 }
 
 // LIST_MAP: friendly YAML list key -> (internal key, join char).

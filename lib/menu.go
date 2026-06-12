@@ -2231,6 +2231,17 @@ type zsSite struct {
 	StopTimeout string   `yaml:"stop_timeout,omitempty"`
 	AlwaysOn    bool     `yaml:"always_on,omitempty"`
 	Enabled     *bool    `yaml:"enabled,omitempty"`
+	// per-site Sablier-parity overrides (blank = use the global config default)
+	Group               string `yaml:"group,omitempty"`
+	Mode                string `yaml:"mode,omitempty"`    // dynamic | blocking
+	Timeout             string `yaml:"timeout,omitempty"` // max wait for the service
+	Warmup              string `yaml:"warmup,omitempty"`
+	Refresh             string `yaml:"refresh,omitempty"`
+	HealthCheckPath     string `yaml:"healthcheck_path,omitempty"`
+	HealthCheckInterval string `yaml:"healthcheck_interval,omitempty"`
+	Provider            string `yaml:"provider,omitempty"`
+	Replicas            int    `yaml:"replicas,omitempty"`
+	WakeDepends         *bool  `yaml:"wake_depends,omitempty"`
 }
 
 type zsConfig struct {
