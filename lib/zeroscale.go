@@ -159,6 +159,41 @@ func cmdPark(args []string) {
 	fmt.Printf("\x1b[1;32m✔ parked %d\x1b[0m\n", len(park))
 }
 
+// uaIgnored reports whether a User-Agent matches one of the ignore patterns
+// (substring, case-insensitive) — bots/monitors/health-checks that must not wake.
+func uaIgnored(ua, list string) bool {
+	if ua == "" || strings.TrimSpace(list) == "" {
+		return false
+	}
+	lua := strings.ToLower(ua)
+	for _, item := range strings.Split(list, ",") {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item != "" && strings.Contains(lua, item) {
+			return true
+		}
+	}
+	return false
+}
+
+// zsAutoStopOnStartup stops every managed (non-always-on) site so they begin
+// asleep — mirrors Sablier's --provider.auto-stop-on-startup.
+func zsAutoStopOnStartup() {
+	c := loadZSConfig()
+	n := 0
+	for _, s := range c.Sites {
+		if s.AlwaysOn {
+			continue
+		}
+		for _, cn := range s.Containers {
+			if containerRunning(cn) {
+				_ = exec.Command("docker", "stop", cn).Run()
+				n++
+			}
+		}
+	}
+	fmt.Printf("  auto-stop-on-startup: parked %d managed containers\n", n)
+}
+
 // sablierInstalled reports whether a Sablier container exists (running or not).
 func sablierInstalled() bool {
 	for _, f := range [][]string{
@@ -283,6 +318,10 @@ func zeroScaleEngine() {
 	ti := detectTraefik()
 	fmt.Printf("🟢 Zero Scale engine on %s  (traefik=%v api=%v)\n", listen, ti.present, ti.useAPI)
 
+	if cfgBoolKey(configLoad(), "ZERO_SCALE_AUTO_STOP_ON_STARTUP", false) {
+		zsAutoStopOnStartup()
+	}
+
 	// idle sleeper in the background
 	go zeroScaleIdleLoop(ti)
 
@@ -317,10 +356,24 @@ func siteForHost(host string) (string, *zsSite) {
 // zsLandingHandler is what Traefik's errors-middleware hits when a site is asleep.
 // It starts the site's containers and serves the themeable loading screen.
 func zsLandingHandler(w http.ResponseWriter, r *http.Request) {
+	cfg := configLoad()
 	key, s := siteForHost(r.Host)
 	if s == nil {
+		// failOpen: don't hard-error an unknown host — soft retry so traffic isn't blocked.
+		if cfg["ZERO_SCALE_FAIL_OPEN"] != "0" {
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, "<html><head><meta http-equiv=refresh content=2></head><body>starting…</body></html>")
+			return
+		}
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "Zero Scale: no site for host %q", r.Host)
+		return
+	}
+	// Monitors / bots / health-checks must NOT wake a sleeping site.
+	if uaIgnored(r.Header.Get("User-Agent"), cfg["ZERO_SCALE_IGNORE_USER_AGENTS"]) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "asleep")
 		return
 	}
 	// fire the wake (start every container for the site)

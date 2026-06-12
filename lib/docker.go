@@ -1322,6 +1322,8 @@ var scalarMap = map[string]string{
 	"zero_scale_prewarm":       "ZERO_SCALE_PREWARM",       // pre-start sites at boot so the first visit is instant
 	"zero_scale_show_progress": "ZERO_SCALE_SHOW_PROGRESS", // show a real progress/percent bar on the loading screen
 	"zero_scale_retry_after":   "ZERO_SCALE_RETRY_AFTER",   // seconds for the loading page's auto-retry/refresh
+	"zero_scale_fail_open":            "ZERO_SCALE_FAIL_OPEN",            // if the engine errors, let traffic through instead of blocking (Sablier failOpen)
+	"zero_scale_auto_stop_on_startup": "ZERO_SCALE_AUTO_STOP_ON_STARTUP", // on engine startup, stop managed sites so they begin asleep (Sablier)
 }
 
 // LIST_MAP: friendly YAML list key -> (internal key, join char).
@@ -1338,6 +1340,7 @@ var listMap = map[string]listJoin{
 	"proxy_skip": {"PROXY_SKIP_CONTAINERS", " "},
 	"scale_skip": {"SCALE_SKIP_CONTAINERS", " "},
 	// boot bring-up + watchdog selectable lists
+	"zero_scale_ignore_user_agents": {"ZERO_SCALE_IGNORE_USER_AGENTS", ","}, // UAs that DON'T trigger a wake (bots/monitors)
 	"boot_stacks":      {"BOOT_STACKS", " "},      // what starts at boot (stack or stack/service)
 	"boot_escalation":  {"BOOT_ESCALATION", " "},  // ordered harder steps, e.g. recreate fix
 	"watch_stacks":     {"WATCH_STACKS", " "},     // what the watchdog keeps alive (blank = boot_stacks)
@@ -1379,18 +1382,19 @@ func fromConf() map[string]string {
 
 // configLoad mirrors load(): internal-key config from stacks.yaml (fallback conf).
 func configLoad() map[string]string {
-	if _, err := os.Stat(yamlPath()); err != nil {
-		return fromConf()
-	}
+	// Base layer: every key in stacks.conf (internal names directly). This makes
+	// sure options that live only in stacks.conf — i.e. anything shown in the
+	// Settings tab — are actually READ at runtime, not just displayed.
+	cfg := fromConf()
 	data, err := os.ReadFile(yamlPath())
 	if err != nil {
-		return fromConf()
+		return cfg
 	}
 	var y map[string]interface{}
 	if err := yaml.Unmarshal(data, &y); err != nil {
-		return fromConf()
+		return cfg
 	}
-	cfg := map[string]string{}
+	// Overlay: friendly-keyed stacks.yaml values win (the Settings tab writes both).
 	for fk, val := range y {
 		if ik, ok := scalarMap[fk]; ok {
 			cfg[ik] = scalarStr(val)
