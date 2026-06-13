@@ -534,6 +534,10 @@ func zsLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // tell any proxy/edge NOT to buffer the stream
+	fmt.Fprint(w, ": connected\n\n")            // flush something immediately so the box isn't blank
+	fl.Flush()
 	tail := fmt.Sprintf("%d", cfgInt(cfg, "ZERO_SCALE_LOG_LINES", 30))
 	cmd := exec.Command("docker", "logs", "-f", "--tail", tail, s.Containers[0])
 	pipe, err := cmd.StdoutPipe()
@@ -977,20 +981,24 @@ func loadingScreenHTML(screen, display, siteKey, host string) string {
  pre{width:min(640px,90vw);height:30vh;overflow:auto;margin:0;text-align:left;background:#00000055;
    border:1px solid #ffffff14;border-radius:10px;padding:12px;font-size:.76rem;line-height:1.5;color:#aeb6c6}
  pre .ok{color:var(--a)}pre .error{color:#ff7a7a}pre .warn{color:#ffd166}pre .status{color:#7fd3ff}
+ .logcap{width:min(640px,90vw);text-align:left;font-size:.72rem;opacity:.6;margin:4px 0 -10px 2px}
  .tip{opacity:.55;font-size:.75rem}
 </style></head><body><div class="wrap">
  <h1>Waking <span class="a">%[1]s</span>…</h1>
  <div class="sub">starting the container group — this only takes a moment</div>
  <div class="bar"><i></i></div>
  <div class="grid" id="grid"></div>
- <pre id="log">connecting to logs…
-</pre>
+ <div class="logcap">● live log</div>
+ <pre id="log">connecting to logs…</pre>
  <div class="tip">You'll be dropped in automatically once everything is ready.</div>
 </div>
 <script>
  const site=%[2]q, grid=document.getElementById('grid'), log=document.getElementById('log');
+ let first=true;
  try{const es=new EventSource('/zs/logs?site='+encodeURIComponent(site));
-   es.onmessage=e=>{const d=document.createElement('span');
+   es.onmessage=e=>{
+     if(first){log.textContent='';first=false;}   // drop the "connecting…" placeholder on first line
+     const d=document.createElement('span');
      const t=e.data.toLowerCase();
      d.className=/error|fatal/.test(t)?'error':/warn/.test(t)?'warn':/listening|started|ready|running on/.test(t)?'ok':'';
      d.textContent=e.data+'\n';log.appendChild(d);log.scrollTop=log.scrollHeight;

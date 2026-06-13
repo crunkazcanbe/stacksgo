@@ -1011,7 +1011,7 @@ var tuiContainerActions = []tuiAction{
 	{"🌐  Edit IP", "edit_ip"},
 	{"✎  Rename container", "rename"},
 	{"🧹  Reclaim disk (unused images)…", "reclaim_menu"},
-	{"🗑  Remove (force rm)", "remove"},
+	{"🗑  Delete (service + net + vols)", "remove"},
 	{"✕  Cancel", ""},
 }
 
@@ -1134,7 +1134,7 @@ func (m menuModel) doContainerAction(name, stackFile, action string) (menuModel,
 		return m, tuiShellCmd("Restart "+name, "docker", "restart", name)
 	case "remove":
 		m.popup = tuiConfirmPopup("Remove "+truncate(name, 24)+"?",
-			"🗑  YES — rm + delete from stack + purge orphan nets", func() (menuModel, tea.Cmd) {
+			"🗑  YES — rm + delete from stack + purge orphan nets & vols", func() (menuModel, tea.Cmd) {
 				if stackName != "" {
 					return m, tuiSelfCmd("Remove "+name, "purge", "service", stackName, name, "--apply")
 				}

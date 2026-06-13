@@ -2756,6 +2756,14 @@ var (
 	purgeTopHdrRE    = regexp.MustCompile(`^(networks|volumes):`)
 	purge6spaceRE    = regexp.MustCompile(`^      ([A-Za-z0-9_.-]+):`)
 	purge8spaceRE    = regexp.MustCompile(`^        \S`)
+	// volume parsing: service-level `volumes:` header (4-space) + short-form
+	// entries. A NAMED volume source is a bare identifier (no path chars).
+	purgeVolsHdrRE     = regexp.MustCompile(`^    volumes:`)
+	purgeVolEntryRE    = regexp.MustCompile(`^      -\s*["']?([^"':]+):`)
+	purgeVolLongSrcRE  = regexp.MustCompile(`^\s*source:\s*["']?([^"'\s]+)`)
+	purgeVolNamedRE    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	purgeTopVolsHdrRE  = regexp.MustCompile(`^volumes:\s*$`)
+	purgeTopVolEntryRE = regexp.MustCompile(`^  ([A-Za-z0-9._-]+):`)
 )
 
 // purgeServiceBlock mirrors a single (key, container_name, start, end) tuple.
@@ -3098,6 +3106,185 @@ func purgeNetworks(orphans []string, apply bool, log *[]string) {
 	}
 }
 
+// ── volume cascade (mirrors the network cascade) ───────────────────────────────
+
+// purgeVolumesOfBlock returns the NAMED top-level volumes a service block
+// references in its `volumes:` section. Service keys are 4-space; volume
+// entries are 6-space short-form (`- name:/path`) or long-form (`source: name`).
+// Bind mounts (source starting with / . ~ $) and anonymous volumes are excluded;
+// only sources matching ^[A-Za-z0-9][A-Za-z0-9_-]*$ count as named.
+func purgeVolumesOfBlock(lines []string, start, end int) map[string]bool {
+	vols := map[string]bool{}
+	invol := false
+	for _, ln := range lines[start:end] {
+		if purgeVolsHdrRE.MatchString(ln) {
+			invol = true
+			continue
+		}
+		if invol {
+			// short form:  - name:/container/path
+			if m := purgeVolEntryRE.FindStringSubmatch(ln); m != nil {
+				src := strings.TrimSpace(m[1])
+				if purgeVolNamedRE.MatchString(src) {
+					vols[src] = true
+				}
+				continue
+			}
+			// long form:  source: name  (8-space child under a `- ` list item)
+			if m := purgeVolLongSrcRE.FindStringSubmatch(ln); m != nil && strings.HasPrefix(ln, "        ") {
+				src := strings.TrimSpace(m[1])
+				if purgeVolNamedRE.MatchString(src) {
+					vols[src] = true
+				}
+				continue
+			}
+			// stop at the next service-level key or the next service block
+			if purgeSvcLvlRE.MatchString(ln) || purgeNextSvcRE.MatchString(ln) {
+				invol = false
+			}
+		}
+	}
+	return vols
+}
+
+// purgeVolumeUsers mirrors purgeNetworkUsers: {volume: set('stack:service')}
+// across all stacks, EXCLUDING provisioner* services. skip = set of
+// "stack\x00cname" to ignore (the ones being deleted).
+func purgeVolumeUsers(skip map[string]bool) map[string]map[string]bool {
+	if skip == nil {
+		skip = map[string]bool{}
+	}
+	users := map[string]map[string]bool{}
+	for _, f := range purgeStackFiles(false) {
+		stack := strings.TrimSuffix(filepath.Base(f), ".yml")
+		lines, blocks := purgeServiceBlocks(f)
+		for _, b := range blocks {
+			if b.cname != "" && strings.HasPrefix(b.cname, "provisioner") {
+				continue
+			}
+			if skip[purgeSkipKey(stack, b.cname)] {
+				continue
+			}
+			for v := range purgeVolumesOfBlock(lines, b.start, b.end) {
+				if users[v] == nil {
+					users[v] = map[string]bool{}
+				}
+				who := b.cname
+				if who == "" {
+					who = b.key
+				}
+				users[v][stack+":"+who] = true
+			}
+		}
+	}
+	return users
+}
+
+// purgeRemoveVolTopLevel removes every top-level `volumes:` declaration of vol
+// (its key + any nested children) from whatever stack files declare it. If a
+// file's top-level volumes section becomes empty, its header is removed too.
+// Only writes when there is something to remove; backs up first.
+// Returns the list of basenames touched.
+func purgeRemoveVolTopLevel(vol string) []string {
+	var touched []string
+	for _, f := range purgeStackFiles(false) {
+		lines := purgeReadLines(f)
+
+		vstart := -1
+		for i, ln := range lines {
+			if purgeTopVolsHdrRE.MatchString(ln) {
+				vstart = i
+				break
+			}
+		}
+		if vstart == -1 {
+			continue
+		}
+		// section runs until the next top-level (column-0) key
+		vend := len(lines)
+		for j := vstart + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) == "" {
+				continue
+			}
+			if purgeLeftRE.MatchString(lines[j]) {
+				vend = j
+				break
+			}
+		}
+		section := lines[vstart+1 : vend]
+		var newSection []string
+		removed := 0
+		i := 0
+		for i < len(section) {
+			m := purgeTopVolEntryRE.FindStringSubmatch(section[i])
+			if m != nil && m[1] == vol {
+				i++
+				// drop nested 4+-space children of this volume key
+				for i < len(section) && volcleanReContinuation.MatchString(section[i]) {
+					i++
+				}
+				removed++
+			} else {
+				newSection = append(newSection, section[i])
+				i++
+			}
+		}
+		if removed == 0 {
+			continue
+		}
+		purgeBackup(f)
+		hasEntry := false
+		for _, ln := range newSection {
+			if purgeTopVolEntryRE.MatchString(ln) {
+				hasEntry = true
+				break
+			}
+		}
+		var rebuilt []string
+		if hasEntry {
+			rebuilt = append(rebuilt, lines[:vstart]...)
+			rebuilt = append(rebuilt, lines[vstart])
+			rebuilt = append(rebuilt, newSection...)
+			rebuilt = append(rebuilt, lines[vend:]...)
+		} else { // volumes section now empty → drop header
+			rebuilt = append(rebuilt, lines[:vstart]...)
+			rebuilt = append(rebuilt, lines[vend:]...)
+		}
+		purgeWriteJoined(f, rebuilt)
+		touched = append(touched, filepath.Base(f))
+	}
+	return touched
+}
+
+// purgeVolumes mirrors purgeNetworks: for each orphan named volume strip it from
+// the declaring stack's top-level volumes block, and when apply==true also
+// `docker volume rm <volume>`. Logs clearly.
+func purgeVolumes(orphans []string, apply bool, log *[]string) {
+	sorted := append([]string(nil), orphans...)
+	sort.Strings(sorted)
+	for _, vol := range sorted {
+		if !apply {
+			*log = append(*log, fmt.Sprintf("  would remove volume '%s': top-level decls + docker volume", vol))
+			continue
+		}
+		decls := purgeRemoveVolTopLevel(vol)
+		// docker volume rm (best-effort; safe — only the orphan)
+		removedDocker := false
+		if r := cli("volume", "rm", vol); r.exitCode == 0 {
+			removedDocker = true
+		}
+		declStr := "none"
+		if len(decls) > 0 {
+			declStr = strings.Join(purgeUniqSorted(decls), ",")
+		}
+		dockerStr := ""
+		if removedDocker {
+			dockerStr = "; docker vol rm"
+		}
+		*log = append(*log, fmt.Sprintf("  removed volume '%s' (decls: %s%s)", vol, declStr, dockerStr))
+	}
+}
+
 func purgeUniqSorted(in []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -3158,9 +3345,12 @@ func purgeService(stack, container string, apply bool) []string {
 		return []string{fmt.Sprintf("service '%s' not found in %s", container, stack)}
 	}
 	svcNets := purgeNetworksOfBlock(lines, target.start, target.end)
+	svcVols := purgeVolumesOfBlock(lines, target.start, target.end)
 	log = append(log, fmt.Sprintf("service %s (key %s) in %s: networks %s", container, target.key, stack, purgeFmtNetList(svcNets)))
+	log = append(log, fmt.Sprintf("  named volumes %s", purgeFmtNetList(svcVols)))
+	skip := map[string]bool{purgeSkipKey(stack, container): true}
 	// who still uses those nets once this service is gone?
-	users := purgeNetworkUsers(map[string]bool{purgeSkipKey(stack, container): true})
+	users := purgeNetworkUsers(skip)
 	var orphans, keep []string
 	for n := range svcNets {
 		if users[n] == nil {
@@ -3171,7 +3361,21 @@ func purgeService(stack, container string, apply bool) []string {
 	}
 	if len(keep) > 0 {
 		sort.Strings(keep)
-		log = append(log, "  kept (still used): "+strings.Join(keep, ", "))
+		log = append(log, "  kept networks (still used): "+strings.Join(keep, ", "))
+	}
+	// who still uses those volumes once this service is gone?
+	volUsers := purgeVolumeUsers(skip)
+	var volOrphans, volKeep []string
+	for v := range svcVols {
+		if volUsers[v] == nil {
+			volOrphans = append(volOrphans, v)
+		} else {
+			volKeep = append(volKeep, v)
+		}
+	}
+	if len(volKeep) > 0 {
+		sort.Strings(volKeep)
+		log = append(log, "  kept volumes (still used): "+strings.Join(volKeep, ", "))
 	}
 	if apply {
 		purgeBackup(f)
@@ -3183,6 +3387,7 @@ func purgeService(stack, container string, apply bool) []string {
 		log = append(log, fmt.Sprintf("  would remove service block from %s.yml + docker rm %s", stack, container))
 	}
 	purgeNetworks(orphans, apply, &log)
+	purgeVolumes(volOrphans, apply, &log)
 	return log
 }
 
